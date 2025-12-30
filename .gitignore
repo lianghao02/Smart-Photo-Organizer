@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Config (Local settings)
+config.json
+
+# Output Reports
+Sorting_Report_*.txt
+
+# Organizing Folders (in case destination is inside project)
+_Screenshots/
+_Duplicates/
+_LivePhotos/
+No_Date/
+Photos/
+Videos/
