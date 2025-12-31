@@ -31,9 +31,18 @@
 pip install Pillow pillow-heif
 ```
 
-### 2. 執行程式
+### 2. 執行程式 (兩種方式)
 
-```bash
+#### 方法 A：使用快速啟動腳本 (推薦)
+
+直接雙擊資料夾中的 **`start_organizer.bat`** 即可自動執行。
+
+#### 方法 B：使用命令提示字元 (CMD)
+
+若您習慣使用指令列，請依序輸入以下指令：
+
+```cmd
+cd C:\Users\chia-hao\Documents\GitHub\Smart-Photo-Organizer
 python photo_organizer.py
 ```
 

@@ -18,10 +18,18 @@ try:
     from PIL import Image, ExifTags
     import pillow_heif
     # 註冊 HEIC Opener
+    # 註冊 HEIC Opener
     pillow_heif.register_heif_opener()
 except ImportError:
     Image = None
     print("警告: 未安裝 Pillow 或 pillow-heif，部分圖片功能可能失效。")
+
+# --- GPS Module Import ---
+try:
+    import reverse_geocoder as rg
+except ImportError:
+    rg = None
+    print("警告: 未安裝 reverse_geocoder，GPS 分類功能將無法使用。")
 
 # --- 設定常數 (Configuration Constants) ---
 class CONFIG:
@@ -47,7 +55,8 @@ class PhotoOrganizerApp:
         self.mode = tk.StringVar(value="copy")  # copy or move
         self.clean_empty = tk.BooleanVar(value=False)
         self.rename_enabled = tk.BooleanVar(value=False) # 預設關閉重命名
-        
+        self.gps_enabled = tk.BooleanVar(value=False)    # GPS 分類 (Beta)
+
         self.is_running = False
         self.is_paused = False
         self.stop_event = threading.Event()
@@ -73,87 +82,195 @@ class PhotoOrganizerApp:
 
     def _setup_styles(self):
         style = ttk.Style()
-        style.theme_use('clam')
-        style.configure("TFrame", background="#f0f0f0")
-        style.configure("TLabel", background="#f0f0f0", font=("Microsoft JhengHei", 10))
-        style.configure("TButton", font=("Microsoft JhengHei", 10))
-        style.configure("Header.TLabel", font=("Microsoft JhengHei", 11, "bold"))
+        style.theme_use('clam') # 使用 clam 作為基底，更容易自定義顏色
+        
+        # --- 色票 (Color Palette) ---
+        BG_COLOR = "#F4F6F9"       # 淺灰藍背景 (Modern Light)
+        SECTION_BG = "#FFFFFF"     #區塊白底
+        PRIMARY_COLOR = "#4A90E2"  # 主色 (柔和藍)
+        TEXT_COLOR = "#2C3E50"     # 深灰文字
+        SUCCESS_COLOR = "#2ECC71"  # 成功綠
+        WARN_COLOR = "#F1C40F"     # 警告黃
+        ERROR_COLOR = "#E74C3C"    # 錯誤紅
+
+        # --- 字型 (Fonts) ---
+        MAIN_FONT = ("Microsoft JhengHei UI", 10)
+        BOLD_FONT = ("Microsoft JhengHei UI", 10, "bold")
+        HEADER_FONT = ("Microsoft JhengHei UI", 11, "bold")
+        TITLE_FONT = ("Microsoft JhengHei UI", 12, "bold")
+
+        self.root.configure(bg=BG_COLOR)
+
+        # 基礎 Frame / Label
+        style.configure("TFrame", background=BG_COLOR)
+        style.configure("TLabel", background=BG_COLOR, foreground=TEXT_COLOR, font=MAIN_FONT)
+        style.configure("Section.TFrame", background=SECTION_BG)
+        style.configure("Section.TLabel", background=SECTION_BG, foreground=TEXT_COLOR, font=MAIN_FONT)
+
+        # LabelFrame 樣式
+        style.configure("TLabelframe", background=SECTION_BG, bordercolor="#DCE1E7", borderwidth=1)
+        style.configure("TLabelframe.Label", background=SECTION_BG, foreground=PRIMARY_COLOR, font=HEADER_FONT)
+
+        # 按鈕樣式 (Flat Design)
+        style.configure("TButton", 
+            font=BOLD_FONT, 
+            borderwidth=0, 
+            focuscolor="none", 
+            padding=8,
+            background="#E0E6ED",
+            foreground=TEXT_COLOR
+        )
+        style.map("TButton",
+            background=[('active', PRIMARY_COLOR), ('disabled', '#D0D0D0')],
+            foreground=[('active', 'white'), ('disabled', '#888888')]
+        )
+
+        # 特殊按鈕樣式
+        style.configure("Primary.TButton", background=PRIMARY_COLOR, foreground="white")
+        style.map("Primary.TButton", background=[('active', '#357ABD')]) # Darker Blue
+
+        style.configure("Danger.TButton", background=ERROR_COLOR, foreground="white")
+        style.map("Danger.TButton", background=[('active', '#C0392B')])
+
+        # Entry / Checkbox / Radio
+        style.configure("TEntry", padding=5, bordercolor=PRIMARY_COLOR)
+        style.configure("TCheckbutton", background=SECTION_BG, font=MAIN_FONT, focuscolor="none")
+        style.configure("TRadiobutton", background=SECTION_BG, font=MAIN_FONT, focuscolor="none")
+        
+        # Progressbar
+        style.configure("Horizontal.TProgressbar", troughcolor="#E0E0E0", background=PRIMARY_COLOR, bordercolor=BG_COLOR, lightcolor=PRIMARY_COLOR, darkcolor=PRIMARY_COLOR)
 
     def _create_widgets(self):
-        main_frame = ttk.Frame(self.root, padding=15)
-        main_frame.pack(fill="both", expand=True)
+        # 主容器：加上 padding 讓畫面不要貼邊
+        main_container = ttk.Frame(self.root, padding=20)
+        main_container.pack(fill="both", expand=True)
+
+        # 標題區
+        header_frame = ttk.Frame(main_container)
+        header_frame.pack(fill="x", pady=(0, 15))
+        ttk.Label(header_frame, text="✨ " + CONFIG.APP_NAME, font=("Microsoft JhengHei UI", 16, "bold"), foreground="#2C3E50").pack(side="left")
+        ttk.Label(header_frame, text=f"v{CONFIG.VERSION}", font=("Segoe UI", 10), foreground="#7F8C8D").pack(side="left", padx=10, pady=(8,0))
 
         # 1. 檔案路徑設定區
-        self._create_path_section(main_frame)
+        self._create_path_section(main_container)
         
         # 2. 選項設定區
-        self._create_options_section(main_frame)
+        self._create_options_section(main_container)
         
         # 3. 控制按鈕區
-        self._create_control_section(main_frame)
+        self._create_control_section(main_container)
         
         # 4. 訊息與日誌區
-        self._create_log_section(main_frame)
+        self._create_log_section(main_container)
 
     def _create_path_section(self, parent):
-        frame = ttk.LabelFrame(parent, text="📂 資料夾路徑設定", padding=10)
-        frame.pack(fill="x", pady=5)
+        # 使用自定義 Section 背景
+        frame = ttk.LabelFrame(parent, text=" 📂 資料夾路徑設定 ", padding=15)
+        frame.pack(fill="x", pady=10)
         
-        # 來源
-        ttk.Label(frame, text="來源資料夾 (Source):").grid(row=0, column=0, sticky="w", padx=5)
-        ttk.Entry(frame, textvariable=self.source_dir, width=70).grid(row=0, column=1, padx=5)
-        ttk.Button(frame, text="瀏覽...", command=self._select_source).grid(row=0, column=2, padx=5)
+        grid_opts = {'padx': 5, 'pady': 8, 'sticky': 'w'}
         
-        # 目標
-        ttk.Label(frame, text="目標資料夾 (Target):").grid(row=1, column=0, sticky="w", padx=5)
-        ttk.Entry(frame, textvariable=self.dest_dir, width=70).grid(row=1, column=1, padx=5)
-        ttk.Button(frame, text="瀏覽...", command=self._select_dest).grid(row=1, column=2, padx=5)
+        # Source
+        ttk.Label(frame, text="來源資料夾:", style="Section.TLabel").grid(row=0, column=0, **grid_opts)
+        src_entry = ttk.Entry(frame, textvariable=self.source_dir, width=65)
+        src_entry.grid(row=0, column=1, padx=5, pady=8)
+        ttk.Button(frame, text="瀏覽...", command=self._select_source).grid(row=0, column=2, padx=5, pady=8)
+        
+        # Destination
+        ttk.Label(frame, text="目標資料夾:", style="Section.TLabel").grid(row=1, column=0, **grid_opts)
+        dst_entry = ttk.Entry(frame, textvariable=self.dest_dir, width=65)
+        dst_entry.grid(row=1, column=1, padx=5, pady=8)
+        ttk.Button(frame, text="瀏覽...", command=self._select_dest).grid(row=1, column=2, padx=5, pady=8)
 
     def _create_options_section(self, parent):
-        frame = ttk.LabelFrame(parent, text="⚙️ 操作設定", padding=10)
-        frame.pack(fill="x", pady=5)
+        frame = ttk.LabelFrame(parent, text=" ⚙️ 整理規則與選項 ", padding=15)
+        frame.pack(fill="x", pady=10)
         
-        # 模式選擇
-        ttk.Radiobutton(frame, text="複製 (安全模式) - 保留原始檔案", variable=self.mode, value="copy").pack(anchor="w")
-        ttk.Radiobutton(frame, text="移動 (整理模式) - 完成後移動檔案", variable=self.mode, value="move", command=self._toggle_clean_option).pack(anchor="w")
+        # 使用 Grid 佈局讓選項排列更整齊
+        # Row 0: 模式選擇
+        mode_frame = ttk.Frame(frame, style="Section.TFrame")
+        mode_frame.pack(fill="x", anchor="w", pady=5)
         
-        # 進階選項
-        self.chk_clean = ttk.Checkbutton(frame, text="移動後刪除來源空資料夾", variable=self.clean_empty)
-        self.chk_clean.pack(anchor="w", padx=20)
+        ttk.Label(mode_frame, text="運作模式:", style="Section.TLabel", font=("Microsoft JhengHei UI", 10, "bold")).pack(side="left", padx=(0, 10))
+        ttk.Radiobutton(mode_frame, text="複製 (Copy) - 保留原檔，最安全", variable=self.mode, value="copy").pack(side="left", padx=10)
+        ttk.Radiobutton(mode_frame, text="移動 (Move) - 整理後移動，節省空間", variable=self.mode, value="move", command=self._toggle_clean_option).pack(side="left", padx=10)
+
+        # Separator
+        ttk.Separator(frame, orient='horizontal').pack(fill='x', pady=10)
+
+        # Row 1: 進階選項
+        opts_frame = ttk.Frame(frame, style="Section.TFrame")
+        opts_frame.pack(fill="x", anchor="w", pady=5)
         
-        self.chk_rename = ttk.Checkbutton(frame, text="同時重命名檔案 (YYYY_MM_DD_流水號)", variable=self.rename_enabled)
-        self.chk_rename.pack(anchor="w", padx=20)
+        self.chk_clean = ttk.Checkbutton(opts_frame, text="刪除來源空資料夾 (僅移動模式)", variable=self.clean_empty)
+        self.chk_clean.pack(side="left", padx=(0, 20))
+        
+        self.chk_rename = ttk.Checkbutton(opts_frame, text="標準化重命名 (YYYY_MM_DD_流水號)", variable=self.rename_enabled)
+        self.chk_rename.pack(side="left", padx=20)
+
+        # GPS Checkbox
+        self.chk_gps = ttk.Checkbutton(opts_frame, text="啟用 GPS 地點分類 (國別_城市)", variable=self.gps_enabled)
+        self.chk_gps.pack(side="left", padx=20)
+        if rg is None:
+            self.chk_gps.configure(state='disabled', text="啟用 GPS (未安裝 reverse_geocoder)")
+        
+        # 提示文字
+        ttk.Label(opts_frame, text="* 原況照片(Live Photos)將強制保留原名以維持配對", font=("Microsoft JhengHei UI", 9), foreground="#7F8C8D", style="Section.TLabel").pack(side="left", padx=20)
         
         self._toggle_clean_option() # 初始化狀態
 
     def _create_control_section(self, parent):
-        frame = ttk.Frame(parent, padding=10)
-        frame.pack(fill="x", pady=5)
+        frame = ttk.Frame(parent) # 透明背景
+        frame.pack(fill="x", pady=15)
         
-        self.btn_start = ttk.Button(frame, text="▶ 開始整理", command=self._start_thread)
-        self.btn_start.pack(side="left", padx=5)
+        # 左側按鈕群
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(side="left")
         
-        self.btn_pause = ttk.Button(frame, text="⏸ 暫停", command=self._toggle_pause, state="disabled")
-        self.btn_pause.pack(side="left", padx=5)
+        self.btn_start = ttk.Button(btn_frame, text="▶ 開始整理", command=self._start_thread, style="Primary.TButton", width=15)
+        self.btn_start.pack(side="left", padx=(0, 10))
         
-        self.btn_stop = ttk.Button(frame, text="⏹ 停止", command=self._stop_process, state="disabled")
-        self.btn_stop.pack(side="left", padx=5)
+        self.btn_pause = ttk.Button(btn_frame, text="⏸ 暫停", command=self._toggle_pause, state="disabled", width=10)
+        self.btn_pause.pack(side="left", padx=10)
         
-        # 狀態統計
-        self.lbl_stats = ttk.Label(frame, text="等待開始...", font=("Microsoft JhengHei", 10, "bold"), foreground="#007acc")
-        self.lbl_stats.pack(side="right", padx=5)
+        self.btn_stop = ttk.Button(btn_frame, text="⏹ 停止", command=self._stop_process, state="disabled", style="Danger.TButton", width=10)
+        self.btn_stop.pack(side="left", padx=10)
+        
+        # 右側狀態
+        status_frame = ttk.Frame(frame, padding=5, relief="solid", borderwidth=1)
+        # 這裡不設定邊框顏色，用預設的
+        # 為了美觀，這邊簡單用 Label 代替
+        self.lbl_stats = ttk.Label(frame, text="準備就緒", font=("Microsoft JhengHei UI", 11), foreground="#4A90E2")
+        self.lbl_stats.pack(side="right", padx=10, fill="y")
 
     def _create_log_section(self, parent):
-        frame = ttk.LabelFrame(parent, text="📝 操作日誌與狀態", padding=10)
-        frame.pack(fill="both", expand=True, pady=5)
+        frame = ttk.LabelFrame(parent, text=" 📝 執行進度與日誌 ", padding=15)
+        frame.pack(fill="both", expand=True, pady=(0, 5))
         
         # 進度條
-        self.progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate")
+        self.progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate", style="Horizontal.TProgressbar")
         self.progress.pack(fill="x", pady=(0, 10))
         
-        # Log
-        self.log_area = scrolledtext.ScrolledText(frame, state='disabled', height=10, font=("Consolas", 9))
+        # Log 區域 (含 Scrollbar)
+        log_frame = ttk.Frame(frame)
+        log_frame.pack(fill="both", expand=True)
+
+        self.log_area = scrolledtext.ScrolledText(
+            log_frame, 
+            state='disabled', 
+            height=8, 
+            font=("Consolas", 10),
+            bg="white",
+            fg="#2C3E50",
+            relief="flat",
+            padx=10,
+            pady=10
+        )
         self.log_area.pack(fill="both", expand=True)
+        
+        # 加一點邊框給 log area
+        # 由於 ScrolledText 本身不好改 border color，外包一個 frame 模擬
+
 
     # --- 邏輯功能實作 ---
 
@@ -200,6 +317,11 @@ class PhotoOrganizerApp:
     def _start_thread(self):
         src = self.source_dir.get()
         dst = self.dest_dir.get()
+
+        # GPS Library Check
+        if self.gps_enabled.get() and rg is None:
+            messagebox.showwarning("警告", "尚未安裝 reverse_geocoder，將自動略過 GPS 分類功能。")
+            self.gps_enabled.set(False)
         
         if not src or not os.path.exists(src):
             messagebox.showerror("錯誤", "來源資料夾無效！")
@@ -385,6 +507,13 @@ class PhotoOrganizerApp:
                 type_folder = "Photos" if is_photo else "Videos"
                 
             target_dir = os.path.join(dst_root, type_folder, folder_name)
+            
+            # --- GPS 子資料夾處理 (Option A) ---
+            if self.gps_enabled.get():
+                location_subfolder = self._get_location_folder(file_path, is_photo)
+                if location_subfolder:
+                    target_dir = os.path.join(target_dir, location_subfolder)
+            
             os.makedirs(target_dir, exist_ok=True)
             
             # 有日期 -> 檢查是否啟用重命名
@@ -692,6 +821,79 @@ class PhotoOrganizerApp:
         
         self.stop_event.set()
         self.root.destroy()
+
+    # --- GPS & Helper Functions ---
+
+    def _get_location_folder(self, path, is_photo):
+        """嘗試從圖片提取 GPS 並反查 Country_City"""
+        if not is_photo or not Image or not rg:
+            return None
+        
+        lat_lon = self._get_lat_lon(path)
+        if not lat_lon:
+            return None
+            
+        try:
+            # reverse_geocoder 接受 [(lat, lon)]
+            # 首次載入會需要下載資料 (約 30MB 記憶體)
+            results = rg.search([lat_lon], mode=2) 
+            if results:
+                data = results[0]
+                country = data.get('cc', 'Unknown')
+                city = data.get('name', 'Unknown')
+                
+                # 清理檔案名稱非法字元
+                safe_country = "".join([c for c in country if c.isalnum() or c in (' ', '_')]).strip()
+                safe_city = "".join([c for c in city if c.isalnum() or c in (' ', '_')]).strip()
+                
+                if not safe_country: safe_country = "Unknown"
+                if not safe_city: safe_city = "Location"
+                
+                return f"{safe_country}_{safe_city}"
+        except Exception:
+            pass
+            
+        return None
+
+    def _get_lat_lon(self, path):
+        """從 EXIF 提取經緯度 (Decimal)"""
+        try:
+            img = Image.open(path)
+            exif = img.getexif()
+            if not exif:
+                return None
+                
+            # GPS Info Tag ID = 34853
+            gps_info = exif.get_ifd(34853)
+            if not gps_info:
+                return None
+            
+            gps_lat_ref = gps_info.get(1)
+            gps_lat = gps_info.get(2)
+            gps_lon_ref = gps_info.get(3)
+            gps_lon = gps_info.get(4)
+            
+            if gps_lat and gps_lat_ref and gps_lon and gps_lon_ref:
+                lat = self._convert_to_degrees(gps_lat)
+                lon = self._convert_to_degrees(gps_lon)
+                
+                if gps_lat_ref != "N": lat = -lat
+                if gps_lon_ref != "E": lon = -lon
+                return (lat, lon)
+                
+        except Exception:
+            pass
+        return None
+
+    def _convert_to_degrees(self, value):
+        """Helper to convert DMS tuple to decimal degrees"""
+        try:
+            d = value[0]
+            m = value[1]
+            s = value[2]
+            return float(d) + (float(m) / 60.0) + (float(s) / 3600.0)
+        except:
+            return 0.0
 
 if __name__ == "__main__":
     root = tk.Tk()
