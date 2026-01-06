@@ -31,17 +31,30 @@ except ImportError:
     rg = None
     print("警告: 未安裝 reverse_geocoder，GPS 分類功能將無法使用。")
 
+# --- Blur Detection Import ---
+try:
+    import cv2
+    import numpy as np
+except ImportError:
+    cv2 = None
+    print("警告: 未安裝 opencv-python，模糊偵測功能將無法使用。")
+
 # --- 設定常數 (Configuration Constants) ---
 class CONFIG:
     APP_NAME = "專業照片整理助手 (Pro)"
-    VERSION = "2.0"
+    VERSION = "2.2"
     CONFIG_FILE = "config.json"
+    HISTORY_FILE = "history_log.json" # History Database
     BLOCK_SIZE = 65536  # Hash 讀取區塊大小
     
     # 支援的副檔名
     EXT_PHOTOS = {'.jpg', '.jpeg', '.png', '.heic', '.bmp', '.tiff', '.raw', '.arw', '.webp'}
     EXT_VIDEOS = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.3gp', '.m4v'}
     EXT_JUNK = {'.json', '.ini', '.db', '.html', '.txt', '.tmp', '.url'}
+
+    # 解除 Pillow 像素限制 (避免 DecompressionBombWarning)
+    if Image:
+        Image.MAX_IMAGE_PIXELS = None
 
 class PhotoOrganizerApp:
     def __init__(self, root):
@@ -55,7 +68,11 @@ class PhotoOrganizerApp:
         self.mode = tk.StringVar(value="copy")  # copy or move
         self.clean_empty = tk.BooleanVar(value=False)
         self.rename_enabled = tk.BooleanVar(value=False) # 預設關閉重命名
+        self.clean_empty = tk.BooleanVar(value=False)
+        self.rename_enabled = tk.BooleanVar(value=False) # 預設關閉重命名
         self.gps_enabled = tk.BooleanVar(value=False)    # GPS 分類 (Beta)
+        self.resume_enabled = tk.BooleanVar(value=True)  # 斷點續傳 (預設開啟)
+        self.blur_check_enabled = tk.BooleanVar(value=False) # 模糊偵測 (New!)
 
         self.is_running = False
         self.is_paused = False
@@ -66,10 +83,14 @@ class PhotoOrganizerApp:
         # 統計變數
         self.stats = {
             "processed": 0,
+            "processed_size": 0,
+            "total_size": 0,
             "skipped": 0,
             "errors": 0,
             "failed_files": []
         }
+
+        self.history_db = {} # In-memory history cache {src_path: {mtime, size, dest}}
 
         # 設定樣式
         self._setup_styles()
@@ -214,6 +235,19 @@ class PhotoOrganizerApp:
         if rg is None:
             self.chk_gps.configure(state='disabled', text="啟用 GPS (未安裝 reverse_geocoder)")
         
+        # Resume Checkbox (Row 2)
+        opts_frame_2 = ttk.Frame(frame, style="Section.TFrame")
+        opts_frame_2.pack(fill="x", anchor="w", pady=5)
+
+        self.chk_resume = ttk.Checkbutton(opts_frame_2, text="啟用斷點續傳 (略過已處理檔案)", variable=self.resume_enabled)
+        self.chk_resume.pack(side="left", padx=(0, 20))
+
+        # Blur Checkbox (New)
+        self.chk_blur = ttk.Checkbutton(opts_frame_2, text="啟用模糊偵測 (Blur, 實驗性)", variable=self.blur_check_enabled)
+        self.chk_blur.pack(side="left", padx=20)
+        if cv2 is None:
+            self.chk_blur.configure(state='disabled', text="啟用模糊偵測 (未安裝 OpenCV)")
+
         # 提示文字
         ttk.Label(opts_frame, text="* 原況照片(Live Photos)將強制保留原名以維持配對", font=("Microsoft JhengHei UI", 9), foreground="#7F8C8D", style="Section.TLabel").pack(side="left", padx=20)
         
@@ -249,7 +283,11 @@ class PhotoOrganizerApp:
         
         # 進度條
         self.progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate", style="Horizontal.TProgressbar")
-        self.progress.pack(fill="x", pady=(0, 10))
+        self.progress.pack(fill="x", pady=(0, 5))
+        
+        # 即時處理檔案顯示 (New!)
+        self.lbl_current_file = ttk.Label(frame, text="等待開始...", font=("Microsoft JhengHei UI", 9), foreground="#7F8C8D")
+        self.lbl_current_file.pack(fill="x", pady=(0, 10))
         
         # Log 區域 (含 Scrollbar)
         log_frame = ttk.Frame(frame)
@@ -336,11 +374,26 @@ class PhotoOrganizerApp:
         self.is_paused = False
         
         # 重置統計
-        self.stats = {"processed": 0, "skipped": 0, "errors": 0, "failed_files": []}
+        self.stats = {
+            "processed": 0, 
+            "processed_size": 0,
+            "total_size": 0,
+            "skipped": 0, 
+            "errors": 0, 
+            "failed_files": []
+        }
         # 重置去重資料庫 {filesize: {set of hashes}}
         self.seen_files = {}
         # 重置目錄編號快取 {(dir_path, prefix): max_seq}
         self.dir_counters = {}
+        
+        # 載入歷史紀錄
+        if self.resume_enabled.get():
+            self._load_history()
+            self._log(f"已載入歷史紀錄: {len(self.history_db)} 筆資料")
+        else:
+            self.history_db = {}
+            
         self.log_area.configure(state='normal')
         self.log_area.delete('1.0', tk.END)
         self.log_area.tag_config('error', foreground='red')
@@ -375,9 +428,22 @@ class PhotoOrganizerApp:
             # 1. 掃描檔案
             self._log("正在掃描檔案...", None)
             all_files = []
+            scan_count = 0
             for r, d, f in os.walk(src_root):
+                if self.stop_event.is_set(): break
                 for file in f:
-                    all_files.append(os.path.join(r, file))
+                    fp = os.path.join(r, file)
+                    all_files.append(fp)
+                    # [Fix] Disable pre-scan size check to avoid TotalFileGuard error
+                    # try:
+                    #     self.stats['total_size'] += os.path.getsize(fp)
+                    # except:
+                    #     pass
+                    
+                    scan_count += 1
+                    if scan_count % 1000 == 0:
+                        self.lbl_stats.configure(text=f"正在掃描... 已發現 {scan_count} 個檔案")
+                        self.root.update_idletasks()
             
             total = len(all_files)
             if total == 0:
@@ -397,15 +463,27 @@ class PhotoOrganizerApp:
                 # 更新 UI
                 if idx % 5 == 0: # 降低更新頻率以提升效能
                     prog = ((idx) / total) * 100
-                    self.root.after(0, lambda v=prog: self.progress.configure(value=v))
-                    self._update_stats_label()
+                    # self.root.after(0, lambda v=prog: self.progress.configure(value=v)) # 已經包含在 update_stats_label 裡了? 不，分開。
+                    # Let's keep one UI update method
+                    self.root.after(0, lambda v=prog: self._update_ui_progress(v))
+
+                # Update current file label (Immediate)
+                # 為了避免 GUI 卡頓，這裡用 after(0) 
+                # Note: 如果檔案極多，這行可能會稍微影響效能，但使用者體驗優先
+                fname_display = os.path.basename(file_path)
+                self.root.after(0, lambda f=fname_display: self.lbl_current_file.configure(text=f"正在處理: {f}"))
 
                 try:
                     self._handle_single_file(file_path, dst_root)
                 except Exception as e:
                     self.stats['errors'] += 1
                     self.stats['failed_files'].append(f"{file_path} (例外錯誤: {str(e)})")
+                    self.stats['failed_files'].append(f"{file_path} (例外錯誤: {str(e)})")
                     self._log(f"處理失敗: {os.path.basename(file_path)} - {e}", 'error')
+
+            # Loop End: Save History
+            if self.resume_enabled.get():
+                self._save_history()
 
             # 3. 清理空資料夾 (Move 模式)
             if self.mode.get() == 'move' and self.clean_empty.get() and not self.stop_event.is_set():
@@ -427,7 +505,20 @@ class PhotoOrganizerApp:
     def _handle_single_file(self, file_path, dst_root):
         filename = os.path.basename(file_path)
         ext = os.path.splitext(filename)[1].lower()
-        
+        f_size = 0
+        try:
+            f_size = os.path.getsize(file_path)
+        except:
+            pass
+
+        # 0. Resume Check (斷點續傳檢查)
+        if self.resume_enabled.get():
+            if self._is_already_processed(file_path):
+                # self._log(f"[略過] 歷史紀錄已存在: {filename}", 'warn') # Optional: don't spam log
+                self.stats['skipped'] += 1
+                self.stats['processed_size'] += f_size # 算進去，讓進度對得上
+                return
+
         # A. 雜檔過濾
         if ext in CONFIG.EXT_JUNK:
             return 
@@ -451,7 +542,7 @@ class PhotoOrganizerApp:
 
         # C. 全域去重 (Global Deduplication)
         # 為了效能，先比對檔案大小，有命中才算 Hash
-        f_size = os.path.getsize(file_path)
+        # f_size 已在開頭取得
         is_duplicate = False
         original_file = None
         
@@ -470,6 +561,16 @@ class PhotoOrganizerApp:
             self.seen_files[f_size] = {f_hash: file_path}
             
         if is_duplicate:
+            # [Update] Copy 模式下若重複，直接 Skip (不複製到 _Duplicates)
+            if self.mode.get() == 'copy':
+                 self._log(f"[略過] 重複檔案 (Copy Mode): {filename} == {os.path.basename(original_file)}", 'warn')
+                 self.stats['skipped'] += 1
+                 self.stats['processed_size'] += f_size
+                 # 更新歷史即使是 skipped
+                 if self.resume_enabled.get():
+                     self._update_history(file_path, "SKIPPED_DUPLICATE")
+                 return
+
             target_dir = os.path.join(dst_root, "_Duplicates")
             os.makedirs(target_dir, exist_ok=True)
             target_path = os.path.join(target_dir, filename)
@@ -481,7 +582,23 @@ class PhotoOrganizerApp:
             self.stats['skipped'] += 1 
             return
 
-        # D. 取得日期 -> 決定資料夾
+        # D. Blur Detection (模糊快篩) - Insert here before Date
+        if self.blur_check_enabled.get() and is_photo and cv2:
+            is_blur, score = self._is_image_blurry(file_path)
+            if is_blur:
+                target_dir = os.path.join(dst_root, "_Blurry")
+                os.makedirs(target_dir, exist_ok=True)
+                target_path = os.path.join(target_dir, filename)
+                target_path = self._get_unique_path(target_path)
+                
+                self._execute_action(file_path, target_path, f"模糊 (Score: {int(score)})")
+                self.stats['processed'] += 1
+                self.stats['processed_size'] += f_size
+                if self.resume_enabled.get():
+                     self._update_history(file_path, target_path)
+                return
+
+        # E. 取得日期 -> 決定資料夾
         date_obj = self._get_date(file_path, is_photo)
 
         # Check Live Photo Pair (原況照片偵測)
@@ -532,9 +649,14 @@ class PhotoOrganizerApp:
             target_path = os.path.join(target_dir, filename)
             target_path = self._get_unique_path(target_path)
 
-        # E. 執行動作
+        # F. 執行動作
         self._execute_action(file_path, target_path, "整理")
         self.stats['processed'] += 1
+        self.stats['processed_size'] += f_size
+        
+        # G. 更新歷史紀錄
+        if self.resume_enabled.get():
+            self._update_history(file_path, target_path)
 
     def _execute_action(self, src, dst, log_tag):
         # 取得父資料夾名稱 (e.g., 2021-10)
@@ -627,19 +749,91 @@ class PhotoOrganizerApp:
 
         return None
 
+    # --- History / Resume Feature Methods ---
+    def _load_history(self):
+        self.history_db = {}
+        if os.path.exists(CONFIG.HISTORY_FILE):
+            try:
+                with open(CONFIG.HISTORY_FILE, 'r', encoding='utf-8') as f:
+                    self.history_db = json.load(f)
+            except:
+                pass
+
+    def _save_history(self):
+        try:
+            with open(CONFIG.HISTORY_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.history_db, f, indent=None) # Compact save
+        except:
+            pass
+
+    def _update_history(self, src_path, dst_path):
+        try:
+            mtime = os.path.getmtime(src_path)
+            size = os.path.getsize(src_path)
+            self.history_db[src_path] = {
+                'mtime': mtime,
+                'size': size,
+                'dest': dst_path
+            }
+        except:
+            pass
+
+    def _is_already_processed(self, src_path):
+        if src_path not in self.history_db:
+            return False
+        
+        record = self.history_db[src_path]
+        try:
+            curr_mtime = os.path.getmtime(src_path)
+            curr_size = os.path.getsize(src_path)
+            
+            # 1. 檢查來源檔案是否變更
+            # 注意: 浮點數比較可能會有微小誤差，可容許 1秒內
+            if abs(curr_mtime - record['mtime']) > 2.0 or curr_size != record['size']:
+                return False
+                
+            # 2. 檢查目標檔案是否存在 (確保真的整理好了)
+            if not os.path.exists(record['dest']):
+                return False
+                
+            return True
+        except:
+            return False
+
+    def _is_valid_date(self, date_obj, src_info=""):
+        """檢查日期是否合理 (1900 ~ Now+30days)"""
+        if not date_obj:
+            return False
+            
+        # 1. Check Min Date (e.g. 1900)
+        if date_obj.year < 1900:
+            # self._log(f"略過過舊日期: {date_obj} ({src_info})", 'warn')
+            return False
+            
+        # 2. Check Max Date (Current Time + Buffer)
+        now = datetime.datetime.now()
+        # Allow 30 days into the future (buffer for camera clock drift)
+        max_date = now + datetime.timedelta(days=30)
+        
+        if date_obj > max_date:
+            self._log(f"略過未來日期: {date_obj.strftime('%Y-%m-%d')} ({src_info})", 'warn')
+            return False
+            
+        return True
+
     def _get_date(self, path, is_photo):
         # 1. JSON Sidecar (Google Takeout 優先)
         try:
             json_path = path + ".json"
             if os.path.exists(json_path):
                 date = self._parse_json_date(json_path)
-                if date: return date
+                if date and self._is_valid_date(date, "JSON"): return date
             
             base_name = os.path.splitext(path)[0]
             json_path_2 = base_name + ".json"
             if os.path.exists(json_path_2):
                  date = self._parse_json_date(json_path_2)
-                 if date: return date
+                 if date and self._is_valid_date(date, "JSON"): return date
         except:
             pass
 
@@ -653,8 +847,7 @@ class PhotoOrganizerApp:
                     
                     exif = img.getexif()
                     if exif:
-                        # 策略調整：優先讀取 SubIFD (0x8769)，因為詳細的 DateTimeOriginal 通常藏在這裡
-                        # 且 IFD0 的 306 (DateTime) 往往是「修改時間」而非「拍攝時間」
+                        # 策略調整：優先讀取 SubIFD (0x8769)
                         
                         # 1. Check SubIFD (0x8769 / 34665)
                         if 34665 in exif:
@@ -662,24 +855,34 @@ class PhotoOrganizerApp:
                                 sub_exif = exif.get_ifd(34665)
                                 # 優先找 DateTimeOriginal (36867)
                                 dt_str = sub_exif.get(36867)
-                                if dt_str: return self._parse_exif_date(dt_str)
+                                if dt_str: 
+                                    d = self._parse_exif_date(dt_str)
+                                    if d and self._is_valid_date(d, "Exif-Original"): return d
                                 # 其次找 DateTimeDigitized (36868)
                                 dt_str = sub_exif.get(36868)
-                                if dt_str: return self._parse_exif_date(dt_str)
-                                # 最後才找 DateTime (306)
+                                if dt_str: 
+                                    d = self._parse_exif_date(dt_str)
+                                    if d and self._is_valid_date(d, "Exif-Digitized"): return d
+                                # 最後才找 DateTime (306) -- 通常是修改時間
                                 dt_str = sub_exif.get(306)
-                                if dt_str: return self._parse_exif_date(dt_str)
+                                if dt_str: 
+                                    d = self._parse_exif_date(dt_str)
+                                    if d and self._is_valid_date(d, "Exif-SubIFD"): return d
                             except:
                                 pass
 
                         # 2. Check IFD0 (Standard Tags)
                         # DateTimeOriginal (36867)
                         dt_str = exif.get(36867)
-                        if dt_str: return self._parse_exif_date(dt_str)
+                        if dt_str: 
+                            d = self._parse_exif_date(dt_str)
+                            if d and self._is_valid_date(d, "Exif-IFD0"): return d
                         
-                        # DateTime (306) - 這是最後的 fallback，通常是修改時間
+                        # DateTime (306)
                         dt_str = exif.get(306)
-                        if dt_str: return self._parse_exif_date(dt_str)
+                        if dt_str: 
+                            d = self._parse_exif_date(dt_str)
+                            if d and self._is_valid_date(d, "Exif-IFD0-DT"): return d
                             
                 except Exception:
                     pass
@@ -691,26 +894,40 @@ class PhotoOrganizerApp:
         # 3. Filename Regex (New Strategy: Parse Filename)
         filename = os.path.basename(path)
         date_from_name = self._parse_filename_date(filename)
-        if date_from_name:
+        if date_from_name and self._is_valid_date(date_from_name, "Filename"):
             return date_from_name
 
         # 4. Sibling Image Check (原況照片 Live Photos 支援)
-        # 若影片本身沒日期，嘗試讀取同名的 HEIC/JPG 照片日期
         if not is_photo:
             base_path = os.path.splitext(path)[0]
-            # 常見的原況照片配對格式
             for img_ext in ['.heic', '.HEIC', '.jpg', '.JPG', '.jpeg', '.JPEG']:
                 sibling_path = base_path + img_ext
-                # 避免讀取自己 (若副檔名剛好相同，雖然這在 is_photo check 已排除)
                 if sibling_path != path and os.path.exists(sibling_path):
-                    # 遞迴讀取該照片的日期 (is_photo=True 會觸發 EXIF 讀取)
-                    # 為避免無限遞迴，這裡我們只單獨調用 EXIF/JSON 讀取，或者簡單地遞迴但限制深度
-                    # 由於 sibling 是 photo，它會走 step 1, 2, 3，不會進 step 4，所以安全。
+                    # 遞迴讀取 (安全機制: Sibling 讀取時 is_photo=True, 不會再次進入 step 4)
                     sib_date = self._get_date(sibling_path, is_photo=True)
-                    if sib_date:
+                    if sib_date and self._is_valid_date(sib_date, "Sibling"):
                         return sib_date
 
+        # 5. Last Resort: File Modification Time (Optional - 目前不啟用，避免亂分類)
+        # return datetime.datetime.fromtimestamp(os.path.getmtime(path))
+
         return None
+
+    def _is_image_blurry(self, path, threshold=100.0):
+        """ 計算 Laplacian Variance 判斷模糊 """
+        try:
+            # cv2 read
+            # OpenCV 不支援非 ascii 路徑，需用 numpy workaround
+            img_array = np.fromfile(path, np.uint8)
+            img = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
+            
+            if img is None: return False, 0.0
+
+            # Laplacian Variance
+            score = cv2.Laplacian(img, cv2.CV_64F).var()
+            return score < threshold, score
+        except:
+            return False, 0.0
 
     def _parse_json_date(self, json_path):
         """解析 Google Takeout JSON"""
@@ -807,6 +1024,31 @@ class PhotoOrganizerApp:
             except:
                 pass
 
+    # --- Helper Update ---
+    def _update_ui_progress(self, val):
+        self.progress.configure(value=val)
+        self._update_stats_label()
+
+    def _update_stats_label(self):
+        # 格式: 總數: 1000 (50GB) | 已完成: 200 (10GB) | 剩餘: ...
+        def fmt_size(b):
+            if b < 1024: return f"{b} B"
+            elif b < 1024**2: return f"{b/1024:.1f} KB"
+            elif b < 1024**3: return f"{b/1024**2:.1f} MB"
+            else: return f"{b/1024**3:.2f} GB"
+
+        total_cnt = self.stats.get('processed', 0) + self.stats.get('skipped', 0) + self.stats.get('errors', 0)
+        # 注意: 這裡的 Total 是預估檔案數
+        # 我們用 total_size 來算百分比
+        
+        p_size = self.stats['processed_size']
+        t_size = self.stats['total_size']
+        r_size = t_size - p_size
+        if r_size < 0: r_size = 0 # Prevent negative if scan mismatch
+
+        txt = f"已完成: {fmt_size(p_size)} | 剩餘: {fmt_size(r_size)} | 總量: {fmt_size(t_size)}"
+        self.lbl_stats.configure(text=txt)
+
     def _on_close(self):
         # Save config
         data = {
@@ -899,3 +1141,9 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = PhotoOrganizerApp(root)
     root.mainloop()
+
+# --- Append History Logic Here for Cleaner Multi-Replace ---
+# (Usually we would insert methods into the class, but append implies out of class scope? 
+# Wait, previous tool usage was replace_file_content at end of file.
+# I should insert these methods INTO the class. Let's start insertion before _is_valid_date or similar.)
+
