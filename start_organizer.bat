@@ -9,4 +9,4 @@ python photo_organizer.py
 
 echo.
 echo [系統提示] 程式已結束。如果有錯誤訊息請截圖。
-pause
+pause  
