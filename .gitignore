@@ -6,14 +6,26 @@ __pycache__/
 
 # Config (Local settings)
 config.json
+history_log.json
 
-# Output Reports
-Sorting_Report_*.txt
-
-# Organizing Folders (in case destination is inside project)
+# Screenshots and Duplicates
 _Screenshots/
 _Duplicates/
 _LivePhotos/
 No_Date/
 Photos/
 Videos/
+
+# System
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.venv
+env/
+venv/
