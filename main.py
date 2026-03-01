@@ -14,6 +14,7 @@ import hashlib
 import shutil
 import threading
 import datetime
+import time
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -23,36 +24,36 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox
 
 # --- 選用套件 (降級處理) ---
 try:
-    from PIL import Image
-    import pillow_heif
+    from PIL import Image  # type: ignore
+    import pillow_heif  # type: ignore
     pillow_heif.register_heif_opener()
 except ImportError:
     Image = None
 
 try:
-    import xxhash
+    import xxhash  # type: ignore
     _HAS_XXHASH = True
 except ImportError:
     _HAS_XXHASH = False
 
 try:
-    import cv2
-    import numpy as np
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
     _HAS_CV2 = True
 except ImportError:
     cv2 = None
     _HAS_CV2 = False
 
 try:
-    from geopy.geocoders import Nominatim
-    from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+    from geopy.geocoders import Nominatim  # type: ignore
+    from geopy.exc import GeocoderTimedOut, GeocoderServiceError  # type: ignore
     _HAS_GEOPY = True
 except ImportError:
     Nominatim = None
     _HAS_GEOPY = False
 
 try:
-    import reverse_geocoder as rg
+    import reverse_geocoder as rg  # type: ignore
     _HAS_RG = True
 except ImportError:
     rg = None
@@ -63,7 +64,7 @@ except ImportError:
 # 模組一：Logger — 全域日誌單例
 # ==============================================================================
 class Logger:
-    _instance = None
+    _instance: Optional['Logger'] = None
 
     def __init__(self):
         self._callback: Optional[Callable[[str, str], None]] = None
@@ -79,7 +80,7 @@ class Logger:
         self._callback = callback
 
     def log(self, message: str, level: str = 'info'):
-        if self._callback:
+        if self._callback is not None:
             self._callback(message, level)
         else:
             print(f"[{level.upper()}] {message}")
@@ -108,7 +109,7 @@ class ConfigConstants:
 
 class AppConfig:
     """使用者偏好設定，以 JSON 持久化"""
-    _instance = None
+    _instance: Optional['AppConfig'] = None
 
     def __init__(self):
         self.source_dir    = ""
@@ -151,7 +152,7 @@ class AppConfig:
 class FSUtils:
 
     @staticmethod
-    def get_unique_path(path: str, reserved_paths: set = None) -> str:
+    def get_unique_path(path: str, reserved_paths: Optional[set] = None) -> str:
         """回傳不重複的路徑（若已存在或已預留則追加 _N）"""
         def is_taken(p):
             if os.path.exists(p): return True
@@ -183,7 +184,7 @@ class FSUtils:
                     pass
 
     @staticmethod
-    def get_sequence_name(target_dir: str, prefix: str, ext: str, dir_counters: dict, reserved_paths: set = None) -> str:
+    def get_sequence_name(target_dir: str, prefix: str, ext: str, dir_counters: dict, reserved_paths: Optional[set] = None) -> str:
         """產生 YYYY_MM_DD_001.ext 格式的序號檔名（使用計數器快取以節省 I/O）"""
         key = (target_dir, prefix)
         if key not in dir_counters:
@@ -215,6 +216,7 @@ class FSUtils:
                 return new_path
             current_seq += 1
             dir_counters[key] = current_seq
+        return ""
 
 
 # ==============================================================================
@@ -297,6 +299,7 @@ class DateParser:
 
     def _get_exif_date(self, path) -> Optional[datetime.datetime]:
         try:
+            if Image is None: return None
             with Image.open(path) as img:
                 exif = img.getexif()
                 if not exif: return None
@@ -373,7 +376,7 @@ class ImageOps:
     @staticmethod
     def is_blurry(path: str, threshold: float = 100.0):
         """回傳 (is_blurry, score)，使用 Laplacian Variance"""
-        if not _HAS_CV2:
+        if not _HAS_CV2 or cv2 is None:
             return False, 0.0
         try:
             arr = np.fromfile(path, np.uint8)
@@ -395,7 +398,7 @@ class ImageOps:
         if _HAS_GEOPY:
             ImageOps._init_geo()
             if ImageOps._geolocator:
-                cache_key = (round(lat, 3), round(lon, 3))
+                cache_key = (round(float(lat), 3), round(float(lon), 3))
                 if cache_key in ImageOps._geo_cache:
                     return ImageOps._geo_cache[cache_key]
                 try:
@@ -425,6 +428,7 @@ class ImageOps:
     @staticmethod
     def _get_lat_lon(path):
         try:
+            if Image is None: return None
             with Image.open(path) as img:
                 exif = img.getexif()
                 if not exif: return None
@@ -472,7 +476,7 @@ class Processor:
         self.pause_event.set()
         self.logger      = Logger.get_instance()
         self.date_parser = DateParser()
-        self.stats = {"processed": 0, "processed_size": 0, "total_size": 0, "skipped": 0, "errors": 0, "failed_files": []}
+        self.stats: Dict[str, Any] = {"processed": 0, "processed_size": 0, "total_size": 0, "skipped": 0, "errors": 0, "failed_files": []}
         self.seen_files  = {}
         self.dst_index   = {}
         self.dir_counters = {}
@@ -514,7 +518,7 @@ class Processor:
 
             self.logger.info(f"共發現 {total_count} 個檔案 ({self._fmt(total_size)})，開始並行處理...")
             max_workers = min(32, (os.cpu_count() or 1) + 4)
-            start_time  = time_start = __import__('time').time()
+            start_time  = time_start = time.time()
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(self._process_single_file, f, dst_root): f for f in all_files}
@@ -525,8 +529,8 @@ class Processor:
                         break
                     self.pause_event.wait()
                     completed += 1
-                    if self.progress_callback:
-                        elapsed = max(__import__('time').time() - start_time, 0.001)
+                    if self.progress_callback is not None:
+                        elapsed = max(time.time() - start_time, 0.001)
                         proc_sz = self.stats['processed_size']
                         speed   = proc_sz / elapsed
                         eta     = (total_size - proc_sz) / speed if speed > 0 else 0
@@ -543,7 +547,7 @@ class Processor:
                             self.stats['failed_files'].append(f"{futures[future]}: {e}")
                         self.logger.error(f"❌ 處理失敗: {os.path.basename(futures[future])} - {e}")
 
-            if self.progress_callback:
+            if self.progress_callback is not None:
                 self.progress_callback({'current': total_count, 'total': total_count, 'filename': 'Finished',
                     'processed_size': total_size, 'total_size': total_size, 'speed': 0, 'eta': 0})
 
@@ -574,7 +578,7 @@ class Processor:
                 w.writerow(["Source File", "Action", "Destination File", "Note"])
                 w.writerows(self.preview_log)
             self.logger.info(f"✅ 預覽報告: {report_path}")
-            if self.status_callback: self.status_callback(f"預覽完成，請查看 {report_path}")
+            if self.status_callback is not None: self.status_callback(f"預覽完成，請查看 {report_path}")
         except Exception as e:
             self.logger.error(f"❌ 無法寫入預覽報告: {e}")
 
@@ -589,7 +593,7 @@ class Processor:
                     sz = os.path.getsize(fp)
                     self.dst_index.setdefault(sz, []).append(fp)
                     count += 1
-                    if count % 1000 == 0 and self.status_callback:
+                    if count % 1000 == 0 and self.status_callback is not None:
                         self.status_callback(f"正在索引目標... ({count})")
                 except Exception:
                     pass
@@ -604,13 +608,14 @@ class Processor:
                 try: total_size += os.path.getsize(fp)
                 except Exception: pass
                 count += 1
-                if count % 1000 == 0 and self.status_callback:
+                if count % 1000 == 0 and self.status_callback is not None:
                     self.status_callback(f"正在掃描... 已發現 {count} 個檔案")
         return files_list, total_size
 
-    def _process_single_file(self, file_path, dst_root):
-        filename = os.path.basename(file_path)
-        ext      = os.path.splitext(filename)[1].lower()
+    def _process_single_file(self, file_path_raw, dst_root):
+        file_path = str(file_path_raw)
+        filename = str(os.path.basename(file_path))
+        ext      = str(os.path.splitext(filename)[1]).lower()
         try:    f_size = os.path.getsize(file_path)
         except: f_size = 0
 
@@ -765,7 +770,7 @@ class Processor:
             rec = self.history_db[src]
         try:
             if abs(os.path.getmtime(src) - rec['mtime']) > 2.0 or size != rec['size']: return False
-            if rec['dest'] not in ("SKIPPED_DEST_DUPE", "SKIPPED_SRC_DUPE") and not os.path.exists(rec['dest']): return False
+            if rec['dest'] not in ("SKIPPED_DEST_DUPE", "SKIPPED_SRC_DUPE") and not os.path.exists(str(rec['dest'])): return False
             return True
         except Exception: return False
 
@@ -826,7 +831,19 @@ class MainWindow:
         self.blur_check_enabled = tk.BooleanVar(value=False)
         self.skip_existing     = tk.BooleanVar(value=bool(self.app_config.skip_existing))
         self.dry_run           = tk.BooleanVar(value=False)
-        self.processor         = None
+        self.processor: Any    = None
+        
+        self.chk_clean: Any = None
+        self.btn_start: Any = None
+        self.btn_pause: Any = None
+        self.btn_stop: Any  = None
+        self.lbl_stats: Any = None
+        self.lbl_speed: Any = None
+        self.lbl_eta: Any   = None
+        self.lbl_size_prog: Any = None
+        self.progress: Any  = None
+        self.lbl_current: Any = None
+        self.log_area: Any  = None
 
         self.logger.set_callback(self._on_log)
         Styles.setup_styles(self.root)
@@ -850,11 +867,10 @@ class MainWindow:
     def _build_paths(self, parent):
         f = ttk.LabelFrame(parent, text=" 📂 資料夾路徑設定 ", padding=15)
         f.pack(fill="x", pady=10)
-        g = {'padx': 5, 'pady': 8, 'sticky': 'w'}
-        ttk.Label(f, text="來源資料夾:", style="Section.TLabel").grid(row=0, column=0, **g)
+        ttk.Label(f, text="來源資料夾:", style="Section.TLabel").grid(row=0, column=0, padx=5, pady=8, sticky='w')
         ttk.Entry(f, textvariable=self.source_dir, width=65).grid(row=0, column=1, padx=5, pady=8)
         ttk.Button(f, text="瀏覽...", command=self._sel_src).grid(row=0, column=2, padx=5, pady=8)
-        ttk.Label(f, text="目標資料夾:", style="Section.TLabel").grid(row=1, column=0, **g)
+        ttk.Label(f, text="目標資料夾:", style="Section.TLabel").grid(row=1, column=0, padx=5, pady=8, sticky='w')
         ttk.Entry(f, textvariable=self.dest_dir, width=65).grid(row=1, column=1, padx=5, pady=8)
         ttk.Button(f, text="瀏覽...", command=self._sel_dst).grid(row=1, column=2, padx=5, pady=8)
 
@@ -930,20 +946,20 @@ class MainWindow:
         self.root.after(0, lambda: self._update_progress(data))
 
     def _update_progress(self, data):
-        total = data['total']
-        if total > 0: self.progress.configure(value=(data['current'] / total) * 100)
-        self.lbl_current.configure(text=f"正在處理: {data['filename']}")
-        self.lbl_stats.configure(text=f"進度: {data['current']}/{total}")
+        total = int(data['total'])
+        if total > 0 and self.progress is not None: self.progress.configure(value=(float(data['current']) / total) * 100)
+        if self.lbl_current is not None: self.lbl_current.configure(text=f"正在處理: {data['filename']}")
+        if self.lbl_stats is not None: self.lbl_stats.configure(text=f"進度: {data['current']}/{total}")
         try:
-            s = data['speed'] / (1024 * 1024)
-            self.lbl_speed.configure(text=f"{s:.1f} MB/s")
+            s = float(data['speed']) / (1024 * 1024)
+            if self.lbl_speed is not None: self.lbl_speed.configure(text=f"{s:.1f} MB/s")
             eta = int(data['eta'])
-            m, s = divmod(eta, 60)
+            m, s_time = divmod(eta, 60)
             h, m = divmod(m, 60)
-            self.lbl_eta.configure(text=(f"{h}h {m}m" if h > 0 else f"{m}m {s}s"))
-            ps = self._fmt_size(data['processed_size'])
-            ts = self._fmt_size(data['total_size'])
-            self.lbl_size_prog.configure(text=f"{ps} / {ts}")
+            if self.lbl_eta is not None: self.lbl_eta.configure(text=(f"{h}h {m}m" if h > 0 else f"{m}m {s_time}s"))
+            ps = self._fmt_size(float(data['processed_size']))
+            ts = self._fmt_size(float(data['total_size']))
+            if self.lbl_size_prog is not None: self.lbl_size_prog.configure(text=f"{ps} / {ts}")
         except Exception: pass
 
     def _fmt_size(self, size):
@@ -952,10 +968,12 @@ class MainWindow:
             size /= 1024.0
         return f"{size:.1f} PB"
 
-    def _on_status(self, msg): self.root.after(0, lambda: self.lbl_stats.configure(text=msg))
+    def _on_status(self, msg): 
+        self.root.after(0, lambda: self.lbl_stats.configure(text=msg) if self.lbl_stats else None)
     def _toggle_clean(self):
-        (self.chk_clean.state(['!disabled']) if self.mode.get() == 'move'
-         else (self.chk_clean.state(['disabled']), self.clean_empty.set(False)))
+        if self.chk_clean is not None:
+            (self.chk_clean.state(['!disabled']) if self.mode.get() == 'move'
+             else (self.chk_clean.state(['disabled']), self.clean_empty.set(False)))
     def _sel_src(self):
         p = filedialog.askdirectory()
         if p: self.source_dir.set(str(Path(p).absolute()))
@@ -965,12 +983,13 @@ class MainWindow:
 
     def _on_log(self, msg, level):
         def _append():
-            self.log_area.configure(state='normal')
-            tag = 'error' if level == 'error' else ('warn' if level == 'warn' else '')
-            prefix = "[錯誤] " if level == 'error' else ("[跳過] " if level == 'warn' else "")
-            self.log_area.insert(tk.END, f"{prefix}{msg}\n", tag)
-            self.log_area.see(tk.END)
-            self.log_area.configure(state='disabled')
+            if self.log_area is not None:
+                self.log_area.configure(state='normal')
+                tag = 'error' if level == 'error' else ('warn' if level == 'warn' else '')
+                prefix = "[錯誤] " if level == 'error' else ("[跳過] " if level == 'warn' else "")
+                self.log_area.insert(tk.END, f"{prefix}{msg}\n", tag)
+                self.log_area.see(tk.END)
+                self.log_area.configure(state='disabled')
         self.root.after(0, _append)
 
     def _start(self):
@@ -990,9 +1009,10 @@ class MainWindow:
             'skip_existing': self.skip_existing.get(), 'dry_run': self.dry_run.get(),
             'src_root': src, 'dst_root': dst
         }
-        self.log_area.configure(state='normal')
-        self.log_area.delete('1.0', tk.END)
-        self.log_area.configure(state='disabled')
+        if self.log_area is not None:
+            self.log_area.configure(state='normal')
+            self.log_area.delete('1.0', tk.END)
+            self.log_area.configure(state='disabled')
         self._set_ui_state(True)
         self.processor = Processor(opts, progress_callback=self._on_progress, status_callback=self._on_status)
         threading.Thread(target=self._run, daemon=True).start()
@@ -1027,9 +1047,9 @@ class MainWindow:
             self._on_log(">> ⏹ 正在停止任務...", "warn")
 
     def _set_ui_state(self, running: bool):
-        self.btn_start.configure(state='disabled' if running else 'normal')
-        self.btn_pause.configure(state='normal' if running else 'disabled')
-        self.btn_stop.configure(state='normal' if running else 'disabled')
+        if self.btn_start: self.btn_start.configure(state='disabled' if running else 'normal')
+        if self.btn_pause: self.btn_pause.configure(state='normal' if running else 'disabled')
+        if self.btn_stop: self.btn_stop.configure(state='normal' if running else 'disabled')
 
     def _on_close(self):
         if self.processor: self.processor.stop()
