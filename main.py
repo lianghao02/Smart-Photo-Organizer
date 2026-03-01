@@ -80,8 +80,9 @@ class Logger:
         self._callback = callback
 
     def log(self, message: str, level: str = 'info'):
-        if self._callback is not None:
-            self._callback(message, level)
+        cb = self._callback
+        if cb is not None:
+            cb(message, level)
         else:
             print(f"[{level.upper()}] {message}")
 
@@ -154,7 +155,7 @@ class FSUtils:
     @staticmethod
     def get_unique_path(path: str, reserved_paths: Optional[set] = None) -> str:
         """回傳不重複的路徑（若已存在或已預留則追加 _N）"""
-        def is_taken(p):
+        def is_taken(p: str) -> bool:
             if os.path.exists(p): return True
             if reserved_paths is not None and p in reserved_paths: return True
             return False
@@ -206,12 +207,15 @@ class FSUtils:
                     pass
             dir_counters[key] = max_seq
 
-        current_seq = dir_counters[key] + 1
+        current_seq = int(dir_counters[key]) + 1
         dir_counters[key] = current_seq
         while True:
             new_name = f"{prefix}_{current_seq:03d}{ext}"
             new_path = os.path.join(target_dir, new_name)
-            is_taken = os.path.exists(new_path) or (reserved_paths is not None and new_path in reserved_paths)
+            is_reserved = False
+            if reserved_paths is not None:
+                is_reserved = str(new_path) in [str(p) for p in reserved_paths]
+            is_taken = os.path.exists(new_path) or is_reserved
             if not is_taken:
                 return new_path
             current_seq += 1
@@ -298,8 +302,8 @@ class DateParser:
         return None
 
     def _get_exif_date(self, path) -> Optional[datetime.datetime]:
+        if Image is None: return None
         try:
-            if Image is None: return None
             with Image.open(path) as img:
                 exif = img.getexif()
                 if not exif: return None
@@ -308,14 +312,18 @@ class DateParser:
                     try:
                         sub = exif.get_ifd(34665)
                         for tag in [36867, 36868, 306]:
-                            d = self._parse_exif_str(sub.get(tag))
-                            if d and self._is_valid(d, "Exif-SubIFD"): return d
+                            dt_str = sub.get(tag)
+                            if dt_str:
+                                d = self._parse_exif_str(dt_str)
+                                if d and self._is_valid(d, "Exif-SubIFD"): return d
                     except Exception:
                         pass
                 # IFD0
                 for tag in [36867, 306]:
-                    d = self._parse_exif_str(exif.get(tag))
-                    if d and self._is_valid(d, "Exif-IFD0"): return d
+                    dt_str = exif.get(tag)
+                    if dt_str:
+                        d = self._parse_exif_str(dt_str)
+                        if d and self._is_valid(d, "Exif-IFD0"): return d
         except Exception:
             pass
         return None
@@ -374,15 +382,15 @@ class ImageOps:
             ImageOps._geolocator = Nominatim(user_agent="smart_photo_organizer_v2", timeout=3)
 
     @staticmethod
-    def is_blurry(path: str, threshold: float = 100.0):
+    def is_blurry(path: str, threshold: float = 100.0) -> tuple[bool, float]:
         """回傳 (is_blurry, score)，使用 Laplacian Variance"""
-        if not _HAS_CV2 or cv2 is None:
+        if not _HAS_CV2 or cv2 is None:  # type: ignore
             return False, 0.0
         try:
             arr = np.fromfile(path, np.uint8)
-            img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+            img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)  # type: ignore
             if img is None: return False, 0.0
-            score = cv2.Laplacian(img, cv2.CV_64F).var()
+            score = cv2.Laplacian(img, cv2.CV_64F).var()  # type: ignore
             return score < threshold, score
         except Exception:
             return False, 0.0
@@ -397,12 +405,13 @@ class ImageOps:
 
         if _HAS_GEOPY:
             ImageOps._init_geo()
-            if ImageOps._geolocator:
-                cache_key = (round(float(lat), 3), round(float(lon), 3))
+            if ImageOps._geolocator is not None:
+                cache_key = (round(float(lat), 3) if lat is not None else 0.0, 
+                             round(float(lon), 3) if lon is not None else 0.0)  # type: ignore
                 if cache_key in ImageOps._geo_cache:
                     return ImageOps._geo_cache[cache_key]
                 try:
-                    loc = ImageOps._geolocator.reverse((lat, lon), language='zh-TW', exactly_one=True)
+                    loc = ImageOps._geolocator.reverse((lat, lon), language='zh-TW', exactly_one=True)  # type: ignore
                     if loc:
                         addr = loc.raw.get('address', {})
                         country = addr.get('country', '未知國家')
@@ -413,9 +422,9 @@ class ImageOps:
                 except (GeocoderTimedOut, GeocoderServiceError, Exception):
                     pass
 
-        if _HAS_RG:
+        if _HAS_RG and rg is not None:
             try:
-                results = rg.search([lat_lon], mode=2)
+                results = rg.search([lat_lon], mode=2)  # type: ignore
                 if results:
                     d = results[0]
                     cc = "".join(c for c in d.get('cc', 'Unknown') if c.isalnum() or c in ' _').strip() or "Unknown"
@@ -427,8 +436,8 @@ class ImageOps:
 
     @staticmethod
     def _get_lat_lon(path):
+        if Image is None: return None
         try:
-            if Image is None: return None
             with Image.open(path) as img:
                 exif = img.getexif()
                 if not exif: return None
@@ -466,8 +475,8 @@ class Processor:
       dry_run / src_root / dst_root
     """
     def __init__(self, config_options: dict,
-                 progress_callback: Optional[Callable] = None,
-                 status_callback: Optional[Callable] = None):
+                 progress_callback: Any = None,
+                 status_callback: Any = None):
         self.config = config_options
         self.progress_callback = progress_callback
         self.status_callback   = status_callback
@@ -521,6 +530,9 @@ class Processor:
             start_time  = time_start = time.time()
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Pylance: "files_list" is not defined. Assuming this was meant to be `all_files`.
+                # `all_files` is already a list from `_scan_files`.
+                # if not isinstance(files_list, list): files_list = list(files_list)  # type: ignore
                 futures = {executor.submit(self._process_single_file, f, dst_root): f for f in all_files}
                 completed = 0
                 for future in concurrent.futures.as_completed(futures):
@@ -529,14 +541,15 @@ class Processor:
                         break
                     self.pause_event.wait()
                     completed += 1
-                    if self.progress_callback is not None:
+                    cb_prog = self.progress_callback
+                    if cb_prog is not None:
                         elapsed = max(time.time() - start_time, 0.001)
                         proc_sz = self.stats['processed_size']
                         speed   = proc_sz / elapsed
                         eta     = (total_size - proc_sz) / speed if speed > 0 else 0
                         if completed % 5 == 0 or completed == total_count:
-                            self.progress_callback({'current': completed, 'total': total_count,
-                                'filename': os.path.basename(futures[future]),
+                            cb_prog({'current': completed, 'total': total_count,
+                                'filename': os.path.basename(str(futures[future])),
                                 'processed_size': proc_sz, 'total_size': total_size,
                                 'speed': speed, 'eta': eta})
                     try:
@@ -547,8 +560,9 @@ class Processor:
                             self.stats['failed_files'].append(f"{futures[future]}: {e}")
                         self.logger.error(f"❌ 處理失敗: {os.path.basename(futures[future])} - {e}")
 
-            if self.progress_callback is not None:
-                self.progress_callback({'current': total_count, 'total': total_count, 'filename': 'Finished',
+            cb_prog_final = self.progress_callback
+            if cb_prog_final is not None:
+                cb_prog_final({'current': total_count, 'total': total_count, 'filename': 'Finished',
                     'processed_size': total_size, 'total_size': total_size, 'speed': 0, 'eta': 0})
 
             if not self.config.get('dry_run'): self._save_history()
@@ -578,39 +592,50 @@ class Processor:
                 w.writerow(["Source File", "Action", "Destination File", "Note"])
                 w.writerows(self.preview_log)
             self.logger.info(f"✅ 預覽報告: {report_path}")
-            if self.status_callback is not None: self.status_callback(f"預覽完成，請查看 {report_path}")
+            cb = self.status_callback
+            if cb is not None: cb(f"預覽完成，請查看 {report_path}")
         except Exception as e:
             self.logger.error(f"❌ 無法寫入預覽報告: {e}")
 
     def _index_destination(self, dst_root):
         if not os.path.exists(dst_root): return
-        count = 0
+        count: int = 0
+        cb_status = self.status_callback
         for r, d, f in os.walk(dst_root):
             if self.stop_event.is_set(): break
             for file in f:
-                fp = os.path.join(r, file)
+                fp = str(os.path.join(r, file))
                 try:
-                    sz = os.path.getsize(fp)
-                    self.dst_index.setdefault(sz, []).append(fp)
-                    count += 1
-                    if count % 1000 == 0 and self.status_callback is not None:
-                        self.status_callback(f"正在索引目標... ({count})")
+                    sz = int(os.path.getsize(fp))
+                    if sz not in self.dst_index:
+                        self.dst_index[sz] = []
+                    self.dst_index[sz].append(fp)
+                    c = int(count) + 1
+                    count = c
+                    if c % 1000 == 0 and cb_status is not None:
+                        cb_status(f"正在索引目標... ({c})")
                 except Exception:
                     pass
 
     def _scan_files(self, root):
-        files_list, total_size, count = [], 0, 0
+        files_list: list[str] = []
+        total_size = 0
+        count: int = 0
+        cb_status = self.status_callback
         for r, d, f in os.walk(root):
             if self.stop_event.is_set(): break
             for file in f:
-                fp = os.path.join(r, file)
+                fp = str(os.path.join(r, file))
                 files_list.append(fp)
-                try: total_size += os.path.getsize(fp)
+                try: 
+                    sz = int(os.path.getsize(fp))
+                    total_size += sz
                 except Exception: pass
-                count += 1
-                if count % 1000 == 0 and self.status_callback is not None:
-                    self.status_callback(f"正在掃描... 已發現 {count} 個檔案")
-        return files_list, total_size
+                c = int(count) + 1
+                count = c
+                if c % 1000 == 0 and cb_status is not None:
+                    cb_status(f"正在掃描... 已發現 {c} 個檔案")
+        return files_list, int(total_size)
 
     def _process_single_file(self, file_path_raw, dst_root):
         file_path = str(file_path_raw)
@@ -671,20 +696,20 @@ class Processor:
 
         if date_obj:
             type_folder  = "_LivePhotos" if is_live else ("Photos" if is_photo else "Videos")
-            final_sub    = os.path.join(type_folder, date_obj.strftime("%Y-%m"))
+            final_sub    = os.path.join(type_folder, date_obj.strftime("%Y-%m")) if date_obj else type_folder
             if self.config['gps_enabled']:
                 loc = ImageOps.get_location_folder(file_path)
                 if loc: final_sub = os.path.join(final_sub, loc)
             target_dir = os.path.join(dst_root, final_sub)
             if self.config['rename_enabled'] and not is_live:
                 with self.naming_lock:
-                    reserved = self.dry_run_paths if self.config.get('dry_run') else None
-                    t = FSUtils.get_sequence_name(target_dir, date_obj.strftime("%Y_%m_%d"), ext, self.dir_counters, reserved)
+                    safe_reserved = self.dry_run_paths if self.config.get('dry_run') else set()
+                    t = FSUtils.get_sequence_name(target_dir, date_obj.strftime("%Y_%m_%d") if date_obj else "Unknown", ext, self.dir_counters, safe_reserved)
             else:
                 if not self.config.get('dry_run'): os.makedirs(target_dir, exist_ok=True)
                 with self.naming_lock:
-                    reserved = self.dry_run_paths if self.config.get('dry_run') else None
-                    t = FSUtils.get_unique_path(os.path.join(target_dir, filename), reserved)
+                    safe_reserved = self.dry_run_paths if self.config.get('dry_run') else set()
+                    t = FSUtils.get_unique_path(os.path.join(target_dir, filename), safe_reserved)
             self._execute(file_path, t, "整理")
         else:
             self._transfer_to(file_path, dst_root, "No_Date", filename, "整理")
@@ -733,13 +758,23 @@ class Processor:
                     if f_f == Dedup.get_hash(dp): return "DEST_DUPE"
         if not f_p: f_p = Dedup.get_partial_hash(path)
         if not f_f: f_f = Dedup.get_hash(path)
+        if f_size is None or not isinstance(f_size, int): 
+            return None
         with self.dedup_lock:
             if f_size not in self.seen_files:
                 self.seen_files[f_size] = {f_p: {f_f: path}}; return None
-            partials = self.seen_files[f_size]
+            
+            partials = self.seen_files.get(f_size)
+            if partials is None:
+                self.seen_files[f_size] = {f_p: {f_f: path}}; return None
+                
             if f_p not in partials:
                 partials[f_p] = {f_f: path}; return None
-            fulls = partials[f_p]
+                
+            fulls = partials.get(f_p)
+            if fulls is None:
+                partials[f_p] = {f_f: path}; return None
+                
             if f_f in fulls: return "SRC_DUPE"
             fulls[f_f] = path; return None
 
