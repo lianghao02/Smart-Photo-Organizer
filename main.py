@@ -207,19 +207,23 @@ class FSUtils:
                     pass
             dir_counters[key] = max_seq
 
-        current_seq = int(dir_counters[key]) + 1
-        dir_counters[key] = current_seq
+        class _Seq: n = int(dir_counters[key]) + 1
+        seq = _Seq()
+        dir_counters[key] = seq.n
+        safe_reserved = reserved_paths if reserved_paths is not None else set()
         while True:
-            new_name = f"{prefix}_{current_seq:03d}{ext}"
+            new_name = f"{prefix}_{seq.n:03d}{ext}"
             new_path = os.path.join(target_dir, new_name)
             is_reserved = False
-            if reserved_paths is not None:
-                is_reserved = str(new_path) in [str(p) for p in reserved_paths]
+            for p in safe_reserved:
+                if str(new_path) == str(p):
+                    is_reserved = True
+                    break
             is_taken = os.path.exists(new_path) or is_reserved
             if not is_taken:
                 return new_path
-            current_seq += 1
-            dir_counters[key] = current_seq
+            seq.n += 1
+            dir_counters[key] = seq.n
         return ""
 
 
@@ -297,8 +301,8 @@ class DateParser:
             for img_ext in ['.heic', '.HEIC', '.jpg', '.JPG', '.jpeg', '.JPEG']:
                 sibling = base + img_ext
                 if sibling != path and os.path.exists(sibling):
-                    d = self.get_date(sibling, is_photo=True)
-                    if d: return d
+                    d = DateParser.get_date(self, sibling, is_photo=True)
+                    if d is not None: return d
         return None
 
     def _get_exif_date(self, path) -> Optional[datetime.datetime]:
@@ -378,7 +382,7 @@ class ImageOps:
 
     @staticmethod
     def _init_geo():
-        if ImageOps._geolocator is None and _HAS_GEOPY:
+        if ImageOps._geolocator is None and _HAS_GEOPY and Nominatim is not None:
             ImageOps._geolocator = Nominatim(user_agent="smart_photo_organizer_v2", timeout=3)
 
     @staticmethod
@@ -406,8 +410,8 @@ class ImageOps:
         if _HAS_GEOPY:
             ImageOps._init_geo()
             if ImageOps._geolocator is not None:
-                cache_key = (round(float(lat), 3) if lat is not None else 0.0, 
-                             round(float(lon), 3) if lon is not None else 0.0)  # type: ignore
+                cache_key = (float(f"{float(lat):.3f}") if lat is not None else 0.0, 
+                             float(f"{float(lon):.3f}") if lon is not None else 0.0)
                 if cache_key in ImageOps._geo_cache:
                     return ImageOps._geo_cache[cache_key]
                 try:
@@ -599,7 +603,8 @@ class Processor:
 
     def _index_destination(self, dst_root):
         if not os.path.exists(dst_root): return
-        count: int = 0
+        class _Ctx: n = 0
+        ctx = _Ctx()
         cb_status = self.status_callback
         for r, d, f in os.walk(dst_root):
             if self.stop_event.is_set(): break
@@ -610,17 +615,17 @@ class Processor:
                     if sz not in self.dst_index:
                         self.dst_index[sz] = []
                     self.dst_index[sz].append(fp)
-                    c = int(count) + 1
-                    count = c
-                    if c % 1000 == 0 and cb_status is not None:
-                        cb_status(f"正在索引目標... ({c})")
+                    ctx.n += 1
+                    if ctx.n % 1000 == 0 and cb_status is not None:
+                        cb_status(f"正在索引目標... ({ctx.n})")
                 except Exception:
                     pass
 
     def _scan_files(self, root):
         files_list: list[str] = []
         total_size = 0
-        count: int = 0
+        class _Ctx: n = 0
+        ctx = _Ctx()
         cb_status = self.status_callback
         for r, d, f in os.walk(root):
             if self.stop_event.is_set(): break
@@ -631,10 +636,9 @@ class Processor:
                     sz = int(os.path.getsize(fp))
                     total_size += sz
                 except Exception: pass
-                c = int(count) + 1
-                count = c
-                if c % 1000 == 0 and cb_status is not None:
-                    cb_status(f"正在掃描... 已發現 {c} 個檔案")
+                ctx.n += 1
+                if ctx.n % 1000 == 0 and cb_status is not None:
+                    cb_status(f"正在掃描... 已發現 {ctx.n} 個檔案")
         return files_list, int(total_size)
 
     def _process_single_file(self, file_path_raw, dst_root):
