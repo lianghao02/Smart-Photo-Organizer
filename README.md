@@ -1,55 +1,79 @@
-# Smart Photo Organizer (v2.6 Modern UI)
+# 🗂️ 智慧照片整理助手 (Smart Photo Organizer) v2.7
 
-這是一個專為整理大量混亂照片/影片備份設計的自動化工具，特別針對 Google Takeout 下載的資料、原況照片 (Live Photos) 以及各種日期混亂的舊檔案進行了優化。
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![Version](https://img.shields.io/badge/版本-v2.7-green)
+![Architecture](https://img.shields.io/badge/架構-單一檔案-blue)
 
-**v2.6 重要更新：** 全新現代化儀表板 interfcae，支援即時傳輸速度顯示、剩餘時間預估，以及 GPS 中文化地點分類。
+專為整理大量混亂的照片與影片備份而設計，特別針對 **Google Takeout** 匯出資料、**原況照片 (Live Photos)** 以及日期混亂的舊檔進行最佳化。提供全功能 tkinter GUI 介面，支援多執行緒並行處理。
 
-## ✨ 核心功能
-
-### � 現代化監控儀表板 (New)
-- **即時速度**：顯示每秒處理的 MB 數 (如 `25.5 MB/s`)。
-- **時間預估**：智慧計算剩餘時間 (ETA)，不再盲目等待。
-- **容量進度**：精確掌握已處理的資料量 (如 `1.5 GB / 50 GB`)。
-
-### �🛡️ 智慧分類與隔離
-- **日期分類**：自動依據 `YYYY-MM` 將照片分至不同月份資料夾。
-- **GPS 地點分類**：(選用) 自動解析照片座標，建立如 `2023-10/台灣_台北市` 的子資料夾 (支援繁體中文)。
-- **截圖隔離**：自動識別檔名含 "Screenshot", "截圖" 等字樣，移至 `_Screenshots`。
-- **重複隔離**：內建 MD5 內容比對，重複的檔案會移至 `_Duplicates` 並標註原始檔。
-- **去重模式**：(選用) 若目標資料夾已有相同檔案，可選擇直接跳過，節省時間。
-- **Live Photos 支援**：自動偵測原況照片 (HEIC+MOV)，將其成對歸類至 `_LivePhotos` 並強制保留原名以維持播放功能。
-
-### � 預覽模式 (Dry Run)
-- **模擬執行**：勾選「預覽模式」後，程式會模擬所有操作但不寫入硬碟。
-- **報告產出**：結束後產生 `preview_report.csv`，詳細列出每個檔案預計被移到哪裡。
-
-### �📅 強大的日期解析 (Priority)
-程式依序掃描以下資訊來決定拍攝日期：
-1. **JSON Sidecar**：Google Takeout 產生的 `.json` 檔。
-2. **SubIFD Exif**：優先讀取相機原始拍攝時間 (解決軟體修改日期覆蓋問題)。
-3. **Standard Exif**：標準 EXIF 日期。
-4. **Filename Regex**：解析檔名中的日期 (如 `VID20210310...`)。
+---
 
 ## 🚀 快速開始
 
 ### 1. 安裝依賴
 
-本專案依賴 `Pillow`, `pillow-heif` (圖片處理) 與 `geopy` (GPS 定位)。
-
 ```bash
-pip install Pillow pillow-heif geopy
+# 必要套件
+pip install Pillow pillow-heif
+
+# 選用功能（GPS 分類）
+pip install geopy
+
+# 選用功能（模糊偵測）
+pip install opencv-python numpy
+
+# 選用功能（更快的雜湊演算）
+pip install xxhash
 ```
 
 ### 2. 執行程式
 
-直接雙擊資料夾中的 **`start_organizer.bat`** 即可自動執行。
+```bash
+python main.py
+```
 
-> **效能小撇步：**
-> - **移動 (Move)**：在**同一個硬碟**內操作極快 (秒移)。
-> - **複製 (Copy)**：若要備份到**外接硬碟**，建議使用複製模式，雖然較慢但最安全。
-> - 程式已內建 **多執行緒 (Multi-threading)** 技術，充分利用您的 CPU 與 SSD 效能。
+或直接雙擊 **`start_organizer.bat`**。
 
-## 📝 版本歷程
-- **v2.6**: 現代化儀表板、GPS 中文化、預覽模式、去重功能。
-- **v2.0**: 架構重構、Core/UI 分離。
-- **v1.0**: 初始版本。
+### 3. 操作流程
+
+1. 選擇**來源資料夾**（含照片的目錄）
+2. 選擇**目標資料夾**（整理後存放的位置）
+3. 設定整理選項（模式、重命名、GPS 等）
+4. 點擊「▶ 開始整理」
+
+---
+
+## ✨ 功能特色
+
+| 功能 | 說明 |
+| --- | --- |
+| **格式支援** | JPG, PNG, WebP, BMP, HEIC, RAW (ARW), 影片 MP4/MOV 等 10+ 種 |
+| **智慧日期解析** | JSON Sidecar → EXIF SubIFD → 標準 EXIF → 檔名 Regex，優先順序自動判斷 |
+| **截圖隔離** | 自動偵測 Screenshot / 截圖關鍵字，移至 `_Screenshots` |
+| **重複去除** | 三段式雜湊（檔頭+中段+尾端）精準比對，效能極高 |
+| **Live Photos** | 自動偵測 HEIC+MOV 配對，保留原始檔名並移至 `_LivePhotos` |
+| **GPS 地點分類** | 自動解析座標，建立「台灣_台北市」風格的子資料夾 |
+| **模糊偵測** | Laplacian 方差演算法偵測模糊照片，移至 `_Blurry` |
+| **斷點續傳** | `history_log.json` 記錄進度，重啟後自動跳過已處理檔案 |
+| **預覽模式** | 模擬所有操作，產出 `preview_report.csv`，不寫入硬碟 |
+| **多執行緒** | ThreadPoolExecutor 並行處理，充分利用 CPU + SSD 效能 |
+| **即時儀表板** | 顯示傳輸速度 (MB/s)、剩餘時間 (ETA) 與容量進度 |
+
+---
+
+## 🛠️ 技術棧
+
+| 分類 | 使用技術 |
+| --- | --- |
+| **GUI** | Python tkinter + ttk (clam 主題) |
+| **影像處理** | Pillow + pillow-heif |
+| **GPS 解析** | geopy (Nominatim) + reverse_geocoder (離線備援) |
+| **模糊偵測** | OpenCV (Laplacian Variance) |
+| **雜湊演算** | xxhash (優先) / hashlib MD5 (備援) |
+| **架構** | 單一 `main.py` 交付，9 個模組合併，無外部路徑依賴 |
+
+---
+
+## 📄 授權
+
+[MIT License](LICENSE)
