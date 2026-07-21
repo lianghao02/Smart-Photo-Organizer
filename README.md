@@ -1,7 +1,7 @@
-# 🗂️ 智慧照片整理助手 (Smart Photo Organizer) v2.7
+# 🗂️ 智慧照片整理助手 (Smart Photo Organizer) v2.8
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-![Version](https://img.shields.io/badge/版本-v2.7-green)
+![Version](https://img.shields.io/badge/版本-v2.8-green)
 ![Architecture](https://img.shields.io/badge/架構-單一檔案-blue)
 
 專為整理大量混亂的照片與影片備份而設計，特別針對 **Google Takeout** 匯出資料、**原況照片 (Live Photos)** 以及日期混亂的舊檔進行最佳化。提供全功能 tkinter GUI 介面，支援多執行緒並行處理。
@@ -47,17 +47,17 @@ python main.py
 
 | 功能 | 說明 |
 | --- | --- |
-| **格式支援** | JPG, PNG, WebP, BMP, HEIC, RAW (ARW), 影片 MP4/MOV 等 10+ 種 |
+| **格式支援** | JPG, PNG, HEIC, RAW (NEF, CR2, DNG 等), 影片 MP4/MOV 等十多種格式 |
 | **智慧日期解析** | JSON Sidecar → EXIF SubIFD → 標準 EXIF → 檔名 Regex，優先順序自動判斷 |
-| **截圖隔離** | 自動偵測 Screenshot / 截圖關鍵字，移至 `_Screenshots` |
+| **強制序號命名** | 支援完全按拍攝時間先後順序，強制將檔案重新命名為 `001.jpg` 的純序號格式 |
+| **截圖隔離** | 自動偵測截圖關鍵字與相機長寬比，嚴格模式支援手機直向截圖過濾 |
 | **重複去除** | 三段式雜湊（檔頭+中段+尾端）精準比對，效能極高 |
 | **Live Photos** | 自動偵測 HEIC+MOV 配對，保留原始檔名並移至 `_LivePhotos` |
 | **GPS 地點分類** | 自動解析座標，建立「台灣_台北市」風格的子資料夾 |
+| **OneDrive 防護** | 專為 Windows OneDrive 設計，辨識線上與同步中檔案，不觸發全盤下載 |
 | **模糊偵測** | Laplacian 方差演算法偵測模糊照片，移至 `_Blurry` |
 | **斷點續傳** | `history_log.json` 記錄進度，重啟後自動跳過已處理檔案 |
 | **預覽模式** | 模擬所有操作，產出 `preview_report.csv`，不寫入硬碟 |
-| **多執行緒** | ThreadPoolExecutor 並行處理，充分利用 CPU + SSD 效能 |
-| **即時儀表板** | 顯示傳輸速度 (MB/s)、剩餘時間 (ETA) 與容量進度 |
 
 ---
 
