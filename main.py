@@ -1532,10 +1532,15 @@ class WebBridge:
             "finished_msg": fin_msg
         }
 
+    def _get_dialog_type(self):
+        if hasattr(webview, 'FileDialog') and hasattr(webview.FileDialog, 'FOLDER'):
+            return webview.FileDialog.FOLDER
+        return getattr(webview, 'FOLDER_DIALOG', 10)
+
     def select_source_folder(self):
         if not self._window: return ""
         try:
-            res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+            res = self._window.create_file_dialog(self._get_dialog_type())
             if res and len(res) > 0:
                 return res[0]
         except Exception as e:
@@ -1545,7 +1550,7 @@ class WebBridge:
     def select_dest_folder(self):
         if not self._window: return ""
         try:
-            res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+            res = self._window.create_file_dialog(self._get_dialog_type())
             if res and len(res) > 0:
                 return res[0]
         except Exception as e:
