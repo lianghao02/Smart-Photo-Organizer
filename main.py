@@ -1496,35 +1496,35 @@ class Processor:
 # ==============================================================================
 class WebBridge:
     def __init__(self):
-        self.app_config = AppConfig.get_instance()
-        self.logger     = Logger.get_instance()
-        self.processor: Any = None
-        self.window: Any = None
+        self._app_config = AppConfig.get_instance()
+        self._logger     = Logger.get_instance()
+        self._processor: Any = None
+        self._window: Any = None
         
-        self.log_queue = []
-        self.latest_progress = None
-        self.process_finished_msg = None
-        self.queue_lock = threading.Lock()
+        self._log_queue = []
+        self._latest_progress = None
+        self._process_finished_msg = None
+        self._queue_lock = threading.Lock()
         
-        self.logger.set_callback(self._on_log)
+        self._logger.set_callback(self._on_log)
 
     def set_window(self, window):
-        self.window = window
+        self._window = window
 
     def get_initial_config(self):
         return {
-            "source_dir": self.app_config.source_dir,
-            "dest_dir": self.app_config.dest_dir,
-            "skip_existing": bool(self.app_config.skip_existing)
+            "source_dir": self._app_config.source_dir,
+            "dest_dir": self._app_config.dest_dir,
+            "skip_existing": bool(self._app_config.skip_existing)
         }
 
     def get_updates(self):
-        with self.queue_lock:
-            logs = list(self.log_queue)
-            self.log_queue.clear()
-            prog = self.latest_progress
-            fin_msg = self.process_finished_msg
-            self.process_finished_msg = None
+        with self._queue_lock:
+            logs = list(self._log_queue)
+            self._log_queue.clear()
+            prog = self._latest_progress
+            fin_msg = self._process_finished_msg
+            self._process_finished_msg = None
 
         return {
             "logs": logs,
@@ -1533,23 +1533,23 @@ class WebBridge:
         }
 
     def select_source_folder(self):
-        if not self.window: return ""
+        if not self._window: return ""
         try:
-            res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+            res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
             if res and len(res) > 0:
                 return res[0]
         except Exception as e:
-            self.logger.error(f"選擇資料夾失敗: {e}")
+            self._logger.error(f"選擇資料夾失敗: {e}")
         return ""
 
     def select_dest_folder(self):
-        if not self.window: return ""
+        if not self._window: return ""
         try:
-            res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+            res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
             if res and len(res) > 0:
                 return res[0]
         except Exception as e:
-            self.logger.error(f"選擇資料夾失敗: {e}")
+            self._logger.error(f"選擇資料夾失敗: {e}")
         return ""
 
     def start_process(self, config_dict):
@@ -1562,10 +1562,10 @@ class WebBridge:
         if mode != 'cleanup' and not dst:
             return {"error": "請選擇目標資料夾！"}
 
-        self.app_config.source_dir = src
-        self.app_config.dest_dir = dst
-        self.app_config.skip_existing = config_dict.get('skip_existing', False)
-        self.app_config.save()
+        self._app_config.source_dir = src
+        self._app_config.dest_dir = dst
+        self._app_config.skip_existing = config_dict.get('skip_existing', False)
+        self._app_config.save()
 
         cfg = {
             'src_dir': src,
@@ -1583,47 +1583,47 @@ class WebBridge:
             'onedrive_protect': config_dict.get('onedrive_protect', True)
         }
 
-        self.processor = Processor(cfg, progress_callback=self._on_progress, status_callback=self._on_status)
+        self._processor = Processor(cfg, progress_callback=self._on_progress, status_callback=self._on_status)
         threading.Thread(target=self._run_processor, daemon=True).start()
         return {"success": True}
 
     def _run_processor(self):
         try:
-            r = self.processor.start()
+            r = self._processor.start()
             self._on_log("=== ✅ 任務完成 ===", "info")
             msg = f"整理完成！\n已處理: {r['processed']}\n跳過: {r['skipped']}\n錯誤: {r['errors']}"
-            with self.queue_lock:
-                self.process_finished_msg = msg
+            with self._queue_lock:
+                self._process_finished_msg = msg
         except Exception as e:
             self._on_log(f"❌ 執行失敗: {e}", "error")
-            with self.queue_lock:
-                self.process_finished_msg = f"執行失敗: {e}"
+            with self._queue_lock:
+                self._process_finished_msg = f"執行失敗: {e}"
 
     def pause_process(self):
-        if self.processor:
-            self.processor.pause()
+        if self._processor:
+            self._processor.pause()
             self._on_log(">> ⏸ 任務已暫停", "warn")
 
     def resume_process(self):
-        if self.processor:
-            self.processor.resume()
+        if self._processor:
+            self._processor.resume()
             self._on_log(">> ▶️ 任務繼續", "info")
 
     def stop_process(self):
-        if self.processor:
-            self.processor.stop()
+        if self._processor:
+            self._processor.stop()
             self._on_log(">> ⏹ 正在停止任務...", "warn")
 
     def _on_progress(self, data):
-        with self.queue_lock:
-            self.latest_progress = data
+        with self._queue_lock:
+            self._latest_progress = data
 
     def _on_status(self, msg):
         pass
 
     def _on_log(self, msg, level='info'):
-        with self.queue_lock:
-            self.log_queue.append({"msg": msg, "level": level})
+        with self._queue_lock:
+            self._log_queue.append({"msg": msg, "level": level})
 
 
 # ==============================================================================
