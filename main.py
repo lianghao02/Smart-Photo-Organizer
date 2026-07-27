@@ -1500,6 +1500,12 @@ class WebBridge:
         self.logger     = Logger.get_instance()
         self.processor: Any = None
         self.window: Any = None
+        
+        self.log_queue = []
+        self.latest_progress = None
+        self.process_finished_msg = None
+        self.queue_lock = threading.Lock()
+        
         self.logger.set_callback(self._on_log)
 
     def set_window(self, window):
@@ -1512,18 +1518,38 @@ class WebBridge:
             "skip_existing": bool(self.app_config.skip_existing)
         }
 
+    def get_updates(self):
+        with self.queue_lock:
+            logs = list(self.log_queue)
+            self.log_queue.clear()
+            prog = self.latest_progress
+            fin_msg = self.process_finished_msg
+            self.process_finished_msg = None
+
+        return {
+            "logs": logs,
+            "progress": prog,
+            "finished_msg": fin_msg
+        }
+
     def select_source_folder(self):
         if not self.window: return ""
-        res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
-        if res and len(res) > 0:
-            return res[0]
+        try:
+            res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+            if res and len(res) > 0:
+                return res[0]
+        except Exception as e:
+            self.logger.error(f"選擇資料夾失敗: {e}")
         return ""
 
     def select_dest_folder(self):
         if not self.window: return ""
-        res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
-        if res and len(res) > 0:
-            return res[0]
+        try:
+            res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+            if res and len(res) > 0:
+                return res[0]
+        except Exception as e:
+            self.logger.error(f"選擇資料夾失敗: {e}")
         return ""
 
     def start_process(self, config_dict):
@@ -1536,7 +1562,6 @@ class WebBridge:
         if mode != 'cleanup' and not dst:
             return {"error": "請選擇目標資料夾！"}
 
-        # 保存設定
         self.app_config.source_dir = src
         self.app_config.dest_dir = dst
         self.app_config.skip_existing = config_dict.get('skip_existing', False)
@@ -1567,14 +1592,12 @@ class WebBridge:
             r = self.processor.start()
             self._on_log("=== ✅ 任務完成 ===", "info")
             msg = f"整理完成！\n已處理: {r['processed']}\n跳過: {r['skipped']}\n錯誤: {r['errors']}"
-            if self.window:
-                import json
-                self.window.evaluate_js(f'onProcessFinished({json.dumps(msg)})')
+            with self.queue_lock:
+                self.process_finished_msg = msg
         except Exception as e:
             self._on_log(f"❌ 執行失敗: {e}", "error")
-            if self.window:
-                import json
-                self.window.evaluate_js(f'onProcessFinished({json.dumps(f"執行失敗: {e}")})')
+            with self.queue_lock:
+                self.process_finished_msg = f"執行失敗: {e}"
 
     def pause_process(self):
         if self.processor:
@@ -1592,19 +1615,15 @@ class WebBridge:
             self._on_log(">> ⏹ 正在停止任務...", "warn")
 
     def _on_progress(self, data):
-        if self.window:
-            import json
-            js_code = f"updateProgress({json.dumps(data)})"
-            self.window.evaluate_js(js_code)
+        with self.queue_lock:
+            self.latest_progress = data
 
     def _on_status(self, msg):
         pass
 
     def _on_log(self, msg, level='info'):
-        if self.window:
-            import json
-            js_code = f"appendLog({json.dumps(msg)}, {json.dumps(level)})"
-            self.window.evaluate_js(js_code)
+        with self.queue_lock:
+            self.log_queue.append({"msg": msg, "level": level})
 
 
 # ==============================================================================

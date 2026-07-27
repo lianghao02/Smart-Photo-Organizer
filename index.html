@@ -448,7 +448,34 @@
         document.getElementById('skipExisting').checked = config.skip_existing || false;
       }
     });
+
+    // 啟動死鎖免疫的 200ms 輪詢 (Polling) 機制
+    setInterval(pollUpdates, 200);
   });
+
+  function pollUpdates() {
+    if (!window.pywebview || !pywebview.api) return;
+    pywebview.api.get_updates().then(data => {
+      if (!data) return;
+      
+      // 處理 Log 佇列
+      if (data.logs && data.logs.length > 0) {
+        data.logs.forEach(item => {
+          appendLog(item.msg, item.level);
+        });
+      }
+      
+      // 處理進度儀表板
+      if (data.progress) {
+        updateProgress(data.progress);
+      }
+
+      // 處理任務結束訊息
+      if (data.finished_msg) {
+        onProcessFinished(data.finished_msg);
+      }
+    }).catch(err => {});
+  }
 
   function selectSourceFolder() {
     pywebview.api.select_source_folder().then(folder => {
