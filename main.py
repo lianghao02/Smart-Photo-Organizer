@@ -1573,8 +1573,8 @@ class WebBridge:
         self._app_config.save()
 
         cfg = {
-            'src_dir': src,
-            'dst_dir': dst,
+            'src_root': src,
+            'dst_root': dst,
             'mode': mode,
             'clean_empty': config_dict.get('clean_empty', False),
             'rename_enabled': config_dict.get('rename_enabled', False),
