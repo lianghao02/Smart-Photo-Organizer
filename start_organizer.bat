@@ -21,11 +21,11 @@ if %EXITCODE% NEQ 0 (
                 echo.
                 type "%ERRLOG%"
             ) else (
-                echo 程式異常退出，錯誤碼: %EXITCODE%
+                echo 程式異常結束，錯誤碼: %EXITCODE%
             )
         )
     ) else (
-        echo 程式異常退出，錯誤碼: %EXITCODE%
+        echo 程式異常結束，錯誤碼: %EXITCODE%
     )
     echo.
     echo ------------------------------------------------------
