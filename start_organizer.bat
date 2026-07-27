@@ -30,7 +30,7 @@ if %EXITCODE% NEQ 0 (
     echo.
     echo ------------------------------------------------------
     echo  💡 常見問題排查：
-    echo     1. pip install Pillow pillow-heif
+    echo     1. pip install Pillow pillow-heif pywebview
     echo     2. 確認 Python 已加入 PATH 環境變數
     echo ------------------------------------------------------
     echo.

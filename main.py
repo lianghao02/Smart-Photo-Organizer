@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional, Callable, Dict, Any, Set
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
+import webview
 
 # --- 選用套件 (降級處理) ---
 try:
@@ -1491,411 +1492,135 @@ class Processor:
 
 
 # ==============================================================================
-# 模組八：Styles — ttk 主題樣式
+# 模組九：WebBridge & Web UI 啟動器 (PyWebView)
 # ==============================================================================
-class Styles:
-    @staticmethod
-    def setup_styles(root):
-        style = ttk.Style()
-        style.theme_use('clam')
-        BG      = "#F4F6F9"
-        SECTION = "#FFFFFF"
-        PRIMARY = "#4A90E2"
-        TEXT    = "#2C3E50"
-        DANGER  = "#E74C3C"
-        FONT    = ("Microsoft JhengHei UI", 10)
-        BOLD    = ("Microsoft JhengHei UI", 10, "bold")
-        HEADER  = ("Microsoft JhengHei UI", 11, "bold")
-        root.configure(bg=BG)
-        style.configure("TFrame",          background=BG)
-        style.configure("TLabel",          background=BG, foreground=TEXT, font=FONT)
-        style.configure("Section.TFrame",  background=SECTION)
-        style.configure("Section.TLabel",  background=SECTION, foreground=TEXT, font=FONT)
-        style.configure("TLabelframe",     background=SECTION, bordercolor="#DCE1E7", borderwidth=1)
-        style.configure("TLabelframe.Label", background=SECTION, foreground=PRIMARY, font=HEADER)
-        style.configure("TButton",         font=BOLD, borderwidth=0, focuscolor="none", padding=8, background="#E0E6ED", foreground=TEXT)
-        style.map("TButton", background=[('active', PRIMARY), ('disabled', '#D0D0D0')], foreground=[('active', 'white'), ('disabled', '#888')])
-        style.configure("Primary.TButton", background=PRIMARY, foreground="white")
-        style.map("Primary.TButton",       background=[('active', '#357ABD')])
-        style.configure("Danger.TButton",  background=DANGER, foreground="white")
-        style.map("Danger.TButton",        background=[('active', '#C0392B')])
-        style.configure("TEntry",          padding=5, bordercolor=PRIMARY)
-        style.configure("TCheckbutton",    background=SECTION, font=FONT, focuscolor="none")
-        style.configure("TRadiobutton",    background=SECTION, font=FONT, focuscolor="none")
-        style.configure("Horizontal.TProgressbar", troughcolor="#E0E0E0", background=PRIMARY, bordercolor=BG, lightcolor=PRIMARY, darkcolor=PRIMARY)
-
-
-# ==============================================================================
-# 模組九：MainWindow — tkinter 主視窗
-# ==============================================================================
-class MainWindow:
-    def __init__(self, root):
-        self.root       = root
+class WebBridge:
+    def __init__(self):
         self.app_config = AppConfig.get_instance()
         self.logger     = Logger.get_instance()
-        self.root.title(f"{ConfigConstants.APP_NAME} v{ConfigConstants.VERSION}")
-        self.root.geometry("950x880") # 稍微拉高視窗容納新增選項與執行日誌
-
-        self.source_dir        = tk.StringVar(value=self.app_config.source_dir)
-        self.dest_dir          = tk.StringVar(value=self.app_config.dest_dir)
-        self.mode              = tk.StringVar(value="copy")
-        self.clean_empty       = tk.BooleanVar(value=False)
-        self.rename_enabled    = tk.BooleanVar(value=False)
-        self.gps_enabled       = tk.BooleanVar(value=False)
-        self.resume_enabled    = tk.BooleanVar(value=True)
-        self.blur_check_enabled = tk.BooleanVar(value=False)
-        self.skip_existing     = tk.BooleanVar(value=bool(self.app_config.skip_existing))
-        self.dry_run           = tk.BooleanVar(value=False)
-        self.smart_screenshot  = tk.BooleanVar(value=True)
-        self.screenshot_strict_mode = tk.BooleanVar(value=True)
-        self.onedrive_protect  = tk.BooleanVar(value=True)
-        self.processor: Any    = None
-        
-        # 控制項元件引用，供動態 disable
-        self.entry_dest: Any = None
-        self.btn_dest_browse: Any = None
-        self.chk_rename: Any = None
-        self.chk_gps: Any = None
-        self.chk_blur: Any = None
-        self.chk_skip_exist: Any = None
-        self.chk_clean: Any = None
-        self.btn_start: Any = None
-        self.btn_pause: Any = None
-        self.btn_stop: Any  = None
-        self.lbl_stats: Any = None
-        self.lbl_speed: Any = None
-        self.lbl_eta: Any   = None
-        self.lbl_size_prog: Any = None
-        self.progress: Any  = None
-        self.lbl_current: Any = None
-        self.log_area: Any  = None
-
+        self.processor: Any = None
+        self.window: Any = None
         self.logger.set_callback(self._on_log)
-        Styles.setup_styles(self.root)
-        self._build_ui()
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    def _build_ui(self):
-        container = ttk.Frame(self.root, padding=20)
-        container.pack(fill="both", expand=True)
-        # Header
-        h = ttk.Frame(container); h.pack(fill="x", pady=(0, 15))
-        ttk.Label(h, text="✨ " + ConfigConstants.APP_NAME,
-                  font=("Microsoft JhengHei UI", 16, "bold"), foreground="#2C3E50").pack(side="left")
-        ttk.Label(h, text=f"v{ConfigConstants.VERSION}",
-                  font=("Segoe UI", 10), foreground="#7F8C8D").pack(side="left", padx=10, pady=(8, 0))
-        self._build_paths(container)
-        self._build_options(container)
-        self._build_controls(container)
-        self._build_log(container)
+    def set_window(self, window):
+        self.window = window
 
-    def _build_paths(self, parent):
-        f = ttk.LabelFrame(parent, text=" 📂 資料夾路徑設定 ", padding=15)
-        f.pack(fill="x", pady=10)
-        ttk.Label(f, text="來源資料夾:", style="Section.TLabel").grid(row=0, column=0, padx=5, pady=8, sticky='w')
-        ttk.Entry(f, textvariable=self.source_dir, width=65).grid(row=0, column=1, padx=5, pady=8)
-        ttk.Button(f, text="瀏覽...", command=self._sel_src).grid(row=0, column=2, padx=5, pady=8)
-        ttk.Label(f, text="目標資料夾:", style="Section.TLabel").grid(row=1, column=0, padx=5, pady=8, sticky='w')
-        self.entry_dest = ttk.Entry(f, textvariable=self.dest_dir, width=65)
-        self.entry_dest.grid(row=1, column=1, padx=5, pady=8)
-        self.btn_dest_browse = ttk.Button(f, text="瀏覽...", command=self._sel_dst)
-        self.btn_dest_browse.grid(row=1, column=2, padx=5, pady=8)
-
-    def _build_options(self, parent):
-        f = ttk.LabelFrame(parent, text=" ⚙️ 整理規則與選項 ", padding=15)
-        f.pack(fill="x", pady=10)
-        mf = ttk.Frame(f); mf.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
-        ttk.Label(mf, text="運作模式:", font=("Microsoft JhengHei UI", 10, "bold")).pack(side="left", padx=(5, 15))
-        ttk.Radiobutton(mf, text="複製 (Copy) - 保留原始", variable=self.mode, value="copy",
-                        command=self._toggle_clean).pack(side="left", padx=10)
-        ttk.Radiobutton(mf, text="移動 (Move) - 原始將被移走", variable=self.mode, value="move",
-                        command=self._toggle_clean).pack(side="left", padx=10)
-        ttk.Radiobutton(mf, text="原地清理 (Cleanup) - 刪除截圖與空目錄", variable=self.mode, value="cleanup",
-                        command=self._toggle_clean).pack(side="left", padx=10)
-        tip = "💡 提示：\n   • 移動/複製：進行跨資料夾自動歸檔分類。\n   • 原地清理：專為本機與 OneDrive 設計，僅篩選截圖 (安全移入 _DeletedScreenshots) 並清理空資料夾，100% 不下載雲端檔案。"
-        ttk.Label(f, text=tip, foreground="#7F8C8D", font=("Segoe UI", 9)).grid(
-            row=1, column=0, columnspan=3, sticky="w", padx=20, pady=(0, 10))
-        ttk.Separator(f, orient='horizontal').grid(row=2, column=0, columnspan=3, sticky="ew", pady=5)
-
-        # 第一欄 (整理相關)、第二欄 (防護與效能)、第三欄 (過濾與進階)
-        
-        # Row 3
-        self.chk_rename = ttk.Checkbutton(f, text="強制以拍攝時間重新命名為序號 (例如: 001.jpg)", variable=self.rename_enabled)
-        self.chk_rename.grid(row=3, column=0, sticky="w", padx=10, pady=5)
-        
-        self.chk_onedrive_protect = ttk.Checkbutton(f, text="啟用 OneDrive 雲端防護 (防下載)", variable=self.onedrive_protect)
-        self.chk_onedrive_protect.grid(row=3, column=1, sticky="w", padx=10, pady=5)
-        
-        self.chk_smart_screenshot = ttk.Checkbutton(f, text="智慧截圖辨識 (EXIF/長寬比)", variable=self.smart_screenshot)
-        self.chk_smart_screenshot.grid(row=3, column=2, sticky="w", padx=10, pady=5)
-
-        # Row 4
-        self.chk_gps = ttk.Checkbutton(f, text="啟用 GPS 地點分類", variable=self.gps_enabled)
-        self.chk_gps.grid(row=4, column=0, sticky="w", padx=10, pady=5)
-        
-        self.chk_skip_exist = ttk.Checkbutton(f, text="跳過目標已存在的檔案 (去重)", variable=self.skip_existing)
-        self.chk_skip_exist.grid(row=4, column=1, sticky="w", padx=10, pady=5)
-        
-        self.chk_screenshot_strict = ttk.Checkbutton(f, text="嚴格保護模式 (僅抓取直式截圖)", variable=self.screenshot_strict_mode)
-        self.chk_screenshot_strict.grid(row=4, column=2, sticky="w", padx=10, pady=5)
-
-        # Row 5
-        self.chk_clean = ttk.Checkbutton(f, text="刪除來源空資料夾 (僅移動/清理模式)", variable=self.clean_empty)
-        self.chk_clean.grid(row=5, column=0, sticky="w", padx=10, pady=5)
-        
-        ttk.Checkbutton(f, text="啟用斷點續傳", variable=self.resume_enabled).grid(row=5, column=1, sticky="w", padx=10, pady=5)
-        
-        self.chk_blur = ttk.Checkbutton(f, text="模糊偵測 (實驗性)", variable=self.blur_check_enabled)
-        self.chk_blur.grid(row=5, column=2, sticky="w", padx=10, pady=5)
-
-        ttk.Separator(f, orient='horizontal').grid(row=6, column=0, columnspan=3, sticky="ew", pady=10)
-
-        chk_dry = tk.Checkbutton(f, text="✨ 模擬執行 (預覽模式) — 僅產報表，不寫入硬碟",
-                       variable=self.dry_run, font=("Microsoft JhengHei UI", 10, "bold"),
-                       bg='#e8f5e9', fg='#2e7d32', selectcolor='#e8f5e9',
-                       activebackground='#c8e6c9', activeforeground='#2e7d32', padx=10, pady=5, relief="flat")
-        chk_dry.grid(row=7, column=0, columnspan=3, sticky="w", padx=5)
-        for col in range(3): f.columnconfigure(col, weight=1)
-        self._toggle_clean()
-
-    def _build_controls(self, parent):
-        f = ttk.Frame(parent); f.pack(fill="x", pady=15)
-        bf = ttk.Frame(f); bf.pack(side="left")
-        self.btn_start = ttk.Button(bf, text="▶ 開始整理", command=self._start, style="Primary.TButton", width=15)
-        self.btn_start.pack(side="left", padx=(0, 10))
-        self.btn_pause = ttk.Button(bf, text="⏸ 暫停", command=self._toggle_pause, state="disabled", width=10)
-        self.btn_pause.pack(side="left", padx=10)
-        self.btn_stop  = ttk.Button(bf, text="⏹ 停止", command=self._stop, state="disabled", style="Danger.TButton", width=10)
-        self.btn_stop.pack(side="left", padx=10)
-        self.btn_confirm = ttk.Button(bf, text="💥 確認刪除實體檔案", command=self._confirm_cleanup, state="disabled", style="Danger.TButton", width=22)
-        self.btn_confirm.pack(side="left", padx=15)
-        self.lbl_stats = ttk.Label(f, text="準備就緒", font=("Microsoft JhengHei UI", 11), foreground="#4A90E2")
-        self.lbl_stats.pack(side="right", padx=10, fill="y")
-
-    def _build_log(self, parent):
-        f = ttk.LabelFrame(parent, text=" 📊 即時監控儀表板 ", padding=15)
-        f.pack(fill="both", expand=True, pady=(0, 5))
-        dash = ttk.Frame(f); dash.pack(fill="x", pady=(0, 10))
-        def card(title, col):
-            fc = ttk.Frame(dash, borderwidth=1, relief="solid", padding=10)
-            fc.grid(row=0, column=col, padx=5, sticky="ew")
-            dash.columnconfigure(col, weight=1)
-            ttk.Label(fc, text=title, font=("Segoe UI", 9), foreground="#7F8C8D").pack()
-            v = ttk.Label(fc, text="-", font=("Consolas", 14, "bold"), foreground="#2C3E50")
-            v.pack()
-            return v
-        self.lbl_speed    = card("傳輸速度", 0)
-        self.lbl_eta      = card("預估剩餘時間", 1)
-        self.lbl_size_prog = card("處理容量進度", 2)
-        self.progress = ttk.Progressbar(f, orient="horizontal", mode="determinate", style="Horizontal.TProgressbar")
-        self.progress.pack(fill="x", pady=(0, 5))
-        self.lbl_current = ttk.Label(f, text="等待開始...", font=("Microsoft JhengHei UI", 9), foreground="#7F8C8D")
-        self.lbl_current.pack(fill="x", pady=(0, 10))
-        ttk.Label(f, text="執行日誌:", font=("Microsoft JhengHei UI", 9, "bold")).pack(anchor="w")
-        self.log_area = scrolledtext.ScrolledText(f, state='disabled', height=8, font=("Consolas", 10), bg="#FAFAFA", relief="flat", padx=10, pady=10)
-        self.log_area.pack(fill="both", expand=True)
-        self.log_area.tag_config('error', foreground='#E74C3C')
-        self.log_area.tag_config('warn',  foreground='#D35400')
-
-    # --- 事件處理 ---
-    def _on_progress(self, data):
-        self.root.after(0, lambda: self._update_progress(data))
-
-    def _update_progress(self, data):
-        total = int(data['total'])
-        if total > 0 and self.progress is not None: self.progress.configure(value=(float(data['current']) / total) * 100)
-        if self.lbl_current is not None: self.lbl_current.configure(text=f"正在處理: {data['filename']}")
-        if self.lbl_stats is not None: self.lbl_stats.configure(text=f"進度: {data['current']}/{total}")
-        try:
-            s = float(data['speed']) / (1024 * 1024)
-            if self.lbl_speed is not None: self.lbl_speed.configure(text=f"{s:.1f} MB/s")
-            eta = int(data['eta'])
-            m, s_time = divmod(eta, 60)
-            h, m = divmod(m, 60)
-            if self.lbl_eta is not None: self.lbl_eta.configure(text=(f"{h}h {m}m" if h > 0 else f"{m}m {s_time}s"))
-            ps = self._fmt_size(float(data['processed_size']))
-            ts = self._fmt_size(float(data['total_size']))
-            if self.lbl_size_prog is not None: self.lbl_size_prog.configure(text=f"{ps} / {ts}")
-        except Exception: pass
-
-    def _fmt_size(self, size):
-        for u in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if size < 1024.0: return f"{size:.1f} {u}"
-            size /= 1024.0
-        return f"{size:.1f} PB"
-
-    def _on_status(self, msg): 
-        self.root.after(0, lambda: self.lbl_stats.configure(text=msg) if self.lbl_stats else None)
-    def _toggle_clean(self):
-        mode = self.mode.get()
-        # 處理空目錄核取方塊的狀態
-        if self.chk_clean is not None:
-            if mode in ('move', 'cleanup'):
-                self.chk_clean.state(['!disabled'])
-            else:
-                self.chk_clean.state(['disabled'])
-                self.clean_empty.set(False)
-                
-        # 原地清理模式 (cleanup) 動態關閉無關選項
-        disabled_state = ['disabled'] if mode == 'cleanup' else ['!disabled']
-        
-        if self.entry_dest is not None:
-            self.entry_dest.configure(state='disabled' if mode == 'cleanup' else 'normal')
-        if self.btn_dest_browse is not None:
-            self.btn_dest_browse.state(['disabled'] if mode == 'cleanup' else ['!disabled'])
-            
-        if self.chk_rename is not None: self.chk_rename.state(disabled_state)
-        if self.chk_gps is not None: self.chk_gps.state(disabled_state)
-        if self.chk_blur is not None: self.chk_blur.state(disabled_state)
-        if self.chk_skip_exist is not None: self.chk_skip_exist.state(disabled_state)
-        # Note: smart_screenshot and screenshot_strict_mode should be enabled in cleanup mode, so we don't disable them based on cleanup mode!
-        
-        # 原地清理模式下，預設開啟智慧截圖偵測與 OneDrive 雲端防護
-        if mode == 'cleanup':
-            self.smart_screenshot.set(True)
-            self.onedrive_protect.set(True)
-    def _sel_src(self):
-        p = filedialog.askdirectory()
-        if p: self.source_dir.set(str(Path(p).absolute()))
-    def _sel_dst(self):
-        p = filedialog.askdirectory()
-        if p: self.dest_dir.set(str(Path(p).absolute()))
-
-    def _on_log(self, msg, level):
-        def _append():
-            if self.log_area is not None:
-                self.log_area.configure(state='normal')
-                tag = 'error' if level == 'error' else ('warn' if level == 'warn' else '')
-                prefix = "[錯誤] " if level == 'error' else ("[跳過] " if level == 'warn' else "")
-                self.log_area.insert(tk.END, f"{prefix}{msg}\n", tag)
-                self.log_area.see(tk.END)
-                self.log_area.configure(state='disabled')
-        self.root.after(0, _append)
-
-    def _start(self):
-        src, dst = self.source_dir.get(), self.dest_dir.get()
-        if not src or not os.path.exists(src):
-            messagebox.showerror("錯誤", "來源資料夾無效！"); return
-        if self.mode.get() != 'cleanup':
-            if not dst or not os.path.exists(dst):
-                messagebox.showerror("錯誤", "目標資料夾無效！"); return
-        self.app_config.source_dir    = src
-        self.app_config.dest_dir      = dst
-        self.app_config.skip_existing = self.skip_existing.get()
-        self.app_config.save()
-        opts = {
-            'mode': self.mode.get(), 'clean_empty': self.clean_empty.get(),
-            'rename_enabled': self.rename_enabled.get(), 'gps_enabled': self.gps_enabled.get(),
-            'resume_enabled': self.resume_enabled.get(), 'blur_check_enabled': self.blur_check_enabled.get(),
-            'skip_existing': self.skip_existing.get(), 'dry_run': self.dry_run.get(),
-            'src_root': src, 'dst_root': dst,
-            'onedrive_protect': self.onedrive_protect.get(),
-            'smart_screenshot': self.smart_screenshot.get(),
-            'screenshot_strict_mode': self.screenshot_strict_mode.get()
+    def get_initial_config(self):
+        return {
+            "source_dir": self.app_config.source_dir,
+            "dest_dir": self.app_config.dest_dir,
+            "skip_existing": bool(self.app_config.skip_existing)
         }
-        if self.log_area is not None:
-            self.log_area.configure(state='normal')
-            self.log_area.delete('1.0', tk.END)
-            self.log_area.configure(state='disabled')
-        self._set_ui_state(True)
-        self.processor = Processor(opts, progress_callback=self._on_progress, status_callback=self._on_status)
-        threading.Thread(target=self._run, daemon=True).start()
 
-    def _run(self):
+    def select_source_folder(self):
+        if not self.window: return ""
+        res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        if res and len(res) > 0:
+            return res[0]
+        return ""
+
+    def select_dest_folder(self):
+        if not self.window: return ""
+        res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        if res and len(res) > 0:
+            return res[0]
+        return ""
+
+    def start_process(self, config_dict):
+        src = config_dict.get('source_dir', '').strip()
+        dst = config_dict.get('dest_dir', '').strip()
+        mode = config_dict.get('mode', 'copy')
+
+        if not src or not os.path.exists(src):
+            return {"error": "來源資料夾不存在或未設定！"}
+        if mode != 'cleanup' and not dst:
+            return {"error": "請選擇目標資料夾！"}
+
+        # 保存設定
+        self.app_config.source_dir = src
+        self.app_config.dest_dir = dst
+        self.app_config.skip_existing = config_dict.get('skip_existing', False)
+        self.app_config.save()
+
+        cfg = {
+            'src_dir': src,
+            'dst_dir': dst,
+            'mode': mode,
+            'clean_empty': config_dict.get('clean_empty', False),
+            'rename_enabled': config_dict.get('rename_enabled', False),
+            'gps_enabled': config_dict.get('gps_enabled', False),
+            'resume_enabled': config_dict.get('resume_enabled', True),
+            'blur_check_enabled': config_dict.get('blur_check_enabled', False),
+            'skip_existing': config_dict.get('skip_existing', False),
+            'dry_run': config_dict.get('dry_run', False),
+            'smart_screenshot': config_dict.get('smart_screenshot', True),
+            'screenshot_strict_mode': config_dict.get('screenshot_strict_mode', True),
+            'onedrive_protect': config_dict.get('onedrive_protect', True)
+        }
+
+        self.processor = Processor(cfg, progress_callback=self._on_progress, status_callback=self._on_status)
+        threading.Thread(target=self._run_processor, daemon=True).start()
+        return {"success": True}
+
+    def _run_processor(self):
         try:
             r = self.processor.start()
             self._on_log("=== ✅ 任務完成 ===", "info")
             msg = f"整理完成！\n已處理: {r['processed']}\n跳過: {r['skipped']}\n錯誤: {r['errors']}"
-            
-            # 原地清理模式 (cleanup) 且非模擬執行 (dry_run) 時，啟用實體刪除確認
-            if self.mode.get() == 'cleanup' and not self.dry_run.get():
-                msg += "\n\n💡 待清理的截圖與空資料夾捷徑已建立在來源目錄下的 _ToClean 資料夾中。\n請開啟該資料夾預覽與確認，誤判的相片可直接刪除其捷徑。確認後，點擊「💥 確認刪除實體檔案」按鈕完成清理！"
-                self.root.after(0, lambda: self.btn_confirm.configure(state='normal'))
-                
-            self.root.after(0, lambda: messagebox.showinfo("完成", msg))
+            if self.window:
+                import json
+                self.window.evaluate_js(f'onProcessFinished({json.dumps(msg)})')
         except Exception as e:
-            self._on_log(f"❌ 執行中斷: {e}", "error")
-        finally:
-            self.root.after(0, lambda: self._set_ui_state(False))
+            self._on_log(f"❌ 執行失敗: {e}", "error")
+            if self.window:
+                import json
+                self.window.evaluate_js(f'onProcessFinished({json.dumps(f"執行失敗: {e}")})')
 
-    def _confirm_cleanup(self):
-        src = self.source_dir.get()
-        if not src or not os.path.exists(src):
-            messagebox.showerror("錯誤", "來源資料夾無效！"); return
-            
-        if not self.processor:
-            opts = {
-                'src_root': src,
-                'onedrive_protect': self.onedrive_protect.get()
-            }
-            self.processor = Processor(opts, progress_callback=self._on_progress, status_callback=self._on_status)
-            
-        to_clean_dir = os.path.join(src, "_ToClean")
-        if not os.path.exists(to_clean_dir):
-            messagebox.showinfo("提示", "找不到待清理資料夾 (_ToClean)，可能已完成清理。")
-            self.btn_confirm.configure(state='disabled')
-            return
-
-        if messagebox.askyesno("⚠️ 重大確認", "這將會永久刪除 _ToClean 內現存捷徑所指向的真實實體相片與空資料夾！\n\n確定要正式執行實體檔案刪除嗎？"):
-            self.btn_confirm.configure(state='disabled')
-            self.btn_start.configure(state='disabled')
-            if self.log_area is not None:
-                self.log_area.configure(state='normal')
-                self.log_area.delete('1.0', tk.END)
-                self.log_area.configure(state='disabled')
-            self._on_log(">> 💥 開始執行實體檔案與空資料夾清理，請稍候...", "warn")
-            threading.Thread(target=self._run_confirm, daemon=True).start()
-
-    def _run_confirm(self):
-        try:
-            self.processor.confirm_cleanup()
-            self.root.after(0, lambda: messagebox.showinfo("清理完成", "實體檔案與空資料夾已成功清理！"))
-        except Exception as e:
-            self._on_log(f"❌ 清理失敗: {e}", "error")
-        finally:
-            self.root.after(0, lambda: self._set_ui_state(False))
-
-    def _toggle_pause(self):
-        if not self.processor: return
-        paused = self.btn_pause.cget('text') == "▶ 繼續"
-        if paused:
-            self.processor.resume()
-            self.btn_pause.configure(text="⏸ 暫停")
-            self._on_log(">> ▶️ 任務繼續", "info")
-        else:
+    def pause_process(self):
+        if self.processor:
             self.processor.pause()
-            self.btn_pause.configure(text="▶ 繼續")
             self._on_log(">> ⏸ 任務已暫停", "warn")
 
-    def _stop(self):
-        if not self.processor: return
-        if messagebox.askyesno("確認", "確定要停止目前的任務嗎？"):
+    def resume_process(self):
+        if self.processor:
+            self.processor.resume()
+            self._on_log(">> ▶️ 任務繼續", "info")
+
+    def stop_process(self):
+        if self.processor:
             self.processor.stop()
             self._on_log(">> ⏹ 正在停止任務...", "warn")
 
-    def _set_ui_state(self, running: bool):
-        if self.btn_start: self.btn_start.configure(state='disabled' if running else 'normal')
-        if self.btn_pause: self.btn_pause.configure(state='normal' if running else 'disabled')
-        if self.btn_stop: self.btn_stop.configure(state='normal' if running else 'disabled')
-        if running:
-            if self.btn_confirm: self.btn_confirm.configure(state='disabled')
-        else:
-            # 檢查 _ToClean 是否存在，來決定是否保持確認按鈕可用
-            src = self.source_dir.get()
-            if src and os.path.exists(os.path.join(src, "_ToClean")):
-                if self.btn_confirm: self.btn_confirm.configure(state='normal')
+    def _on_progress(self, data):
+        if self.window:
+            import json
+            js_code = f"updateProgress({json.dumps(data)})"
+            self.window.evaluate_js(js_code)
 
-    def _on_close(self):
-        if self.processor: self.processor.stop()
-        self.app_config.save()
-        self.root.destroy()
+    def _on_status(self, msg):
+        pass
+
+    def _on_log(self, msg, level='info'):
+        if self.window:
+            import json
+            js_code = f"appendLog({json.dumps(msg)}, {json.dumps(level)})"
+            self.window.evaluate_js(js_code)
 
 
 # ==============================================================================
 # 程式入口
 # ==============================================================================
 if __name__ == "__main__":
-    root = tk.Tk()
-    app  = MainWindow(root)
-    root.mainloop()
+    bridge = WebBridge()
+    html_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+    window = webview.create_window(
+        title=f"{ConfigConstants.APP_NAME} v{ConfigConstants.VERSION}",
+        url=html_file,
+        js_api=bridge,
+        width=1020,
+        height=900,
+        resizable=True
+    )
+    bridge.set_window(window)
+    webview.start(debug=False)
 
