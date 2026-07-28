@@ -424,38 +424,27 @@
   <div class="card">
     <div class="card-title">⚙️ 整理模式與規則</div>
 
-    <!-- Mode radios -->
+    <!-- Mode radios (Simplified to 2 Modes) -->
     <div class="mode-container">
       <div class="tooltip-box">
         <label class="radio-label">
-          <input type="radio" name="mode" value="copy" checked onchange="onModeChange()"> 複製照片 (Copy)
+          <input type="radio" name="mode" value="copy" checked> 複製照片 (Copy)
         </label>
-        <span class="info-icon" onclick="alert('💡 複製照片 (Copy)\n\n保留來源資料夾的所有原檔不變，將分類後的照片與影片複製一份放到目標資料夾。')">!</span>
+        <span class="info-icon" onclick="alert('💡 複製照片 (Copy)\n\n保留來源資料夾的所有原檔不變，將分類後的照片與影片複製一份放到目標資料夾。（配合雲端省流量防護，100% 不會下載雲端檔案）')">!</span>
         <div class="tooltip-text">
           <strong>💡 複製照片 (Copy)</strong><br>
-          保留來源資料夾的所有原檔不變，複製一份分類後的照片/影片至目標資料夾。
+          保留來源處的所有原檔，複製一份分類後的照片/影片至目標資料夾。
         </div>
       </div>
 
       <div class="tooltip-box">
         <label class="radio-label">
-          <input type="radio" name="mode" value="move" onchange="onModeChange()"> 移動照片 (Move)
+          <input type="radio" name="mode" value="move"> 移動照片 (Move / 原地與跨資料夾歸檔)
         </label>
-        <span class="info-icon" onclick="alert('💡 移動照片 (Move)\n\n將照片與影片自動分類並搬移至目標資料夾，歸檔並清理來源處的散落檔案。')">!</span>
+        <span class="info-icon" onclick="alert('💡 移動照片 (Move)\n\n將照片與影片自動分類並搬移至目標資料夾，歸檔並清理來源處的散落檔案。\n\n提示：若「目標資料夾」填寫與「來源資料夾」相同，即為本機與雲端硬碟 (OneDrive / Google Drive) 的「原地歸檔與清理」！')">!</span>
         <div class="tooltip-text">
           <strong>💡 移動照片 (Move)</strong><br>
-          將照片與影片自動分類並搬移至目標資料夾，歸檔並清理來源處的散落檔案。
-        </div>
-      </div>
-
-      <div class="tooltip-box">
-        <label class="radio-label">
-          <input type="radio" name="mode" value="cleanup" onchange="onModeChange()"> 原地清理 (Cleanup)
-        </label>
-        <span class="info-icon" onclick="alert('💡 原地清理 (Cleanup)\n\n專為本機與雲端硬碟 (OneDrive / Google Drive) 設計：只篩選截圖安全移入 _DeletedScreenshots 並清理空資料夾，100% 不會下載雲端檔案。')">!</span>
-        <div class="tooltip-text">
-          <strong>💡 原地清理 (Cleanup)</strong><br>
-          專為本機與雲端硬碟 (OneDrive / Google Drive) 設計：只篩選截圖隔離並清理空資料夾，100% 不下載雲端檔案。
+          分類搬移至目標資料夾。若目標與來源相同，即為本機/雲端「原地歸檔與清理」。
         </div>
       </div>
     </div>
@@ -670,9 +659,9 @@
       alert("請選擇來源資料夾！");
       return;
     }
-    if (config.mode !== 'cleanup' && !config.dest_dir) {
-      alert("請選擇目標資料夾！");
-      return;
+    if (!config.dest_dir) {
+      config.dest_dir = config.source_dir;
+      document.getElementById('destDir').value = config.source_dir;
     }
 
     setUiState(true);
