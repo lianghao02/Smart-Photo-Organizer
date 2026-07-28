@@ -431,7 +431,7 @@ class AppConfig:
         self.dest_dir       = ""
         self.skip_existing  = False
         self.folder_pattern = "ym"
-        self.rename_mode    = "none"
+        self.rename_mode    = "date_seq"
         self.load()
 
     @classmethod
@@ -449,7 +449,7 @@ class AppConfig:
                     self.dest_dir       = data.get('dest', '')
                     self.skip_existing  = data.get('skip_existing', False)
                     self.folder_pattern = data.get('folder_pattern', 'ym')
-                    self.rename_mode    = data.get('rename_mode', 'none')
+                    self.rename_mode    = data.get('rename_mode', 'date_seq')
             except Exception:
                 pass
 
@@ -538,18 +538,28 @@ class FSUtils:
         return empty_dirs
 
     @staticmethod
-    def get_date_sequence_name(target_dir: str, prefix: str, ext: str, dir_counters: dict, reserved_paths: Optional[set] = None) -> str:
-        """產生 2024_05_20_001.ext 格式的拍攝日期流水號檔名"""
-        key = (target_dir, prefix)
+    def get_sequence_name(target_dir: str, prefix: str, ext: str, dir_counters: dict, mode: str = "date_seq", reserved_paths: Optional[set] = None) -> str:
+        """根據重命名模式產生 2024_05_20_001.ext (date_seq) 或 001.ext (pure_seq) 檔名"""
+        if mode == "date_seq" and prefix:
+            key = (target_dir, prefix)
+            file_prefix = f"{prefix}_"
+        else:
+            key = (target_dir, "pure_sequence")
+            file_prefix = ""
+
         if key not in dir_counters:
             max_seq = 0
             if os.path.exists(target_dir):
                 try:
-                    pattern = re.compile(rf'^{re.escape(prefix)}_(\d+)$', re.IGNORECASE)
+                    if file_prefix:
+                        pattern = re.compile(rf'^{re.escape(file_prefix)}(\d+)$', re.IGNORECASE)
+                    else:
+                        pattern = re.compile(r'^(\d+)$')
+                    
                     for fname in os.listdir(target_dir):
                         if fname.lower().endswith(ext.lower()):
-                            name_without_ext = os.path.splitext(fname)[0]
-                            match = pattern.fullmatch(name_without_ext)
+                            stem = os.path.splitext(fname)[0]
+                            match = pattern.fullmatch(stem)
                             if match:
                                 try:
                                     num = int(match.group(1))
@@ -561,12 +571,11 @@ class FSUtils:
                     pass
             dir_counters[key] = max_seq
 
-        class _Seq: n = int(dir_counters[key]) + 1
-        seq = _Seq()
-        dir_counters[key] = seq.n
+        dir_counters[key] += 1
+        seq_num = dir_counters[key]
         safe_reserved = reserved_paths if reserved_paths is not None else set()
         while True:
-            new_name = f"{prefix}_{seq.n:03d}{ext}"
+            new_name = f"{file_prefix}{seq_num:03d}{ext}"
             new_path = os.path.join(target_dir, new_name)
             is_reserved = False
             for p in safe_reserved:
@@ -576,51 +585,8 @@ class FSUtils:
             is_taken = os.path.exists(new_path) or is_reserved
             if not is_taken:
                 return new_path
-            seq.n += 1
-            dir_counters[key] = seq.n
-
-    @staticmethod
-    def get_sequence_name(target_dir: str, ext: str, dir_counters: dict, reserved_paths: Optional[set] = None) -> str:
-        """產生 001.ext 格式的純資料夾流水號檔名"""
-        key = (target_dir, "pure_sequence")
-        if key not in dir_counters:
-            max_seq = 0
-            if os.path.exists(target_dir):
-                try:
-                    pattern = re.compile(r'^(\d+)$')
-                    for fname in os.listdir(target_dir):
-                        if fname.lower().endswith(ext.lower()):
-                            name_without_ext = os.path.splitext(fname)[0]
-                            match = pattern.fullmatch(name_without_ext)
-                            if match:
-                                try:
-                                    num = int(match.group(1))
-                                    if num > max_seq:
-                                        max_seq = num
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
-            dir_counters[key] = max_seq
-
-        class _Seq: n = int(dir_counters[key]) + 1
-        seq = _Seq()
-        dir_counters[key] = seq.n
-        safe_reserved = reserved_paths if reserved_paths is not None else set()
-        while True:
-            new_name = f"{seq.n:03d}{ext}"
-            new_path = os.path.join(target_dir, new_name)
-            is_reserved = False
-            for p in safe_reserved:
-                if str(new_path) == str(p):
-                    is_reserved = True
-                    break
-            is_taken = os.path.exists(new_path) or is_reserved
-            if not is_taken:
-                return new_path
-            seq.n += 1
-            dir_counters[key] = seq.n
-        return ""
+            seq_num += 1
+            dir_counters[key] = seq_num
 
 
 # ==============================================================================
@@ -1425,19 +1391,12 @@ class Processor:
                 if loc: final_sub = os.path.join(final_sub, loc)
                 
             target_dir = os.path.join(dst_root, final_sub)
-            rename_mode = self.config.get('rename_mode', 'none')
-            if rename_mode == 'none' and self.config.get('rename_enabled'):
-                rename_mode = 'pure_seq'
-
-            if rename_mode == 'date_seq' and not is_live:
-                prefix = date_obj.strftime("%Y_%m_%d") if date_obj else "Unknown"
+            if self.config['rename_enabled'] and not is_live:
                 with self.naming_lock:
                     safe_reserved = self.dry_run_paths if self.config.get('dry_run') else set()
-                    t = FSUtils.get_date_sequence_name(target_dir, prefix, ext, self.dir_counters, safe_reserved)
-            elif rename_mode == 'pure_seq' and not is_live:
-                with self.naming_lock:
-                    safe_reserved = self.dry_run_paths if self.config.get('dry_run') else set()
-                    t = FSUtils.get_sequence_name(target_dir, ext, self.dir_counters, safe_reserved)
+                    date_prefix = date_obj.strftime("%Y_%m_%d") if date_obj else "Unknown"
+                    rename_mode = self.config.get('rename_mode', 'date_seq')
+                    t = FSUtils.get_sequence_name(target_dir, date_prefix, ext, self.dir_counters, rename_mode, safe_reserved)
             else:
                 if not self.config.get('dry_run'): os.makedirs(target_dir, exist_ok=True)
                 with self.naming_lock:
@@ -1450,9 +1409,14 @@ class Processor:
     def _transfer_to(self, src, root, sub, name, tag):
         d = os.path.join(root, sub)
         if not self.config.get('dry_run'): os.makedirs(d, exist_ok=True)
+        ext = os.path.splitext(name)[1]
         with self.naming_lock:
             reserved = self.dry_run_paths if self.config.get('dry_run') else None
-            t = FSUtils.get_unique_path(os.path.join(d, name), reserved)
+            if self.config.get('rename_enabled'):
+                rename_mode = self.config.get('rename_mode', 'date_seq')
+                t = FSUtils.get_sequence_name(d, "Unknown", ext, self.dir_counters, rename_mode, reserved)
+            else:
+                t = FSUtils.get_unique_path(os.path.join(d, name), reserved)
         self._execute(src, t, tag)
 
     def _execute(self, src, dst, tag):
@@ -1598,7 +1562,7 @@ class WebBridge:
             "dest_dir": self._app_config.dest_dir,
             "skip_existing": bool(self._app_config.skip_existing),
             "folder_pattern": getattr(self._app_config, 'folder_pattern', 'ym'),
-            "rename_mode": getattr(self._app_config, 'rename_mode', 'none')
+            "rename_mode": getattr(self._app_config, 'rename_mode', 'date_seq')
         }
 
     def get_updates(self):
@@ -1666,7 +1630,7 @@ class WebBridge:
         self._app_config.dest_dir = dst
         self._app_config.skip_existing = config_dict.get('skip_existing', False)
         self._app_config.folder_pattern = config_dict.get('folder_pattern', 'ym')
-        self._app_config.rename_mode = config_dict.get('rename_mode', 'none')
+        self._app_config.rename_mode = config_dict.get('rename_mode', 'date_seq')
         self._app_config.save()
 
         cfg = {
@@ -1675,7 +1639,7 @@ class WebBridge:
             'mode': mode,
             'clean_empty': config_dict.get('clean_empty', False),
             'rename_enabled': config_dict.get('rename_enabled', False),
-            'rename_mode': config_dict.get('rename_mode', 'none'),
+            'rename_mode': config_dict.get('rename_mode', 'date_seq'),
             'gps_enabled': config_dict.get('gps_enabled', False),
             'resume_enabled': config_dict.get('resume_enabled', True),
             'blur_check_enabled': config_dict.get('blur_check_enabled', False),
