@@ -463,9 +463,14 @@
 
       <!-- Col 2: Rename -->
       <div class="core-column">
-        <label class="checkbox-label">
-          <input type="checkbox" id="renameEnabled"> 🔢 依拍攝時間重新命名 (001.jpg, 002.jpg...)
+        <label style="font-weight: 600; font-size: 0.88rem; color: var(--text-main); display: flex; align-items: center; gap: 4px; margin-bottom: 6px;">
+          🔢 重新命名模式：
         </label>
+        <select id="renameMode" style="background-color: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-color); padding: 5px 8px; border-radius: 6px; font-size: 0.85rem; width: 100%; outline: none; cursor: pointer;">
+          <option value="none" selected>保持原始檔名 (例: IMG_1234.jpg)</option>
+          <option value="time">依拍攝時間命名 (例: 20240520_143015.jpg)</option>
+          <option value="seq">依純資料夾流水號 (例: 001.jpg, 002.jpg)</option>
+        </select>
       </div>
 
       <!-- Col 3: GPS -->
@@ -564,6 +569,9 @@
         if (config.folder_pattern) {
           document.getElementById('folderPattern').value = config.folder_pattern;
         }
+        if (config.rename_mode) {
+          document.getElementById('renameMode').value = config.rename_mode;
+        }
       }
     });
 
@@ -639,7 +647,8 @@
       dest_dir: document.getElementById('destDir').value,
       mode: document.querySelector('input[name="mode"]:checked').value,
       clean_empty: document.getElementById('cleanEmpty').checked,
-      rename_enabled: document.getElementById('renameEnabled').checked,
+      rename_mode: document.getElementById('renameMode').value,
+      rename_enabled: document.getElementById('renameMode').value !== 'none',
       gps_enabled: document.getElementById('gpsEnabled').checked,
       resume_enabled: document.getElementById('resumeEnabled').checked,
       blur_check_enabled: document.getElementById('blurCheck').checked,
