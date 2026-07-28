@@ -432,6 +432,14 @@
         <label class="checkbox-label">
           <input type="checkbox" id="cleanEmpty"> 🧹 自動清理搬空的舊資料夾
         </label>
+        <div style="grid-column: span 2; display: flex; align-items: center; gap: 10px; padding-top: 8px; border-top: 1px dashed var(--border-color); margin-top: 4px;">
+          <label for="folderPattern" style="font-weight: 600; font-size: 0.88rem; color: var(--text-main);">📁 資料夾分類層級結構：</label>
+          <select id="folderPattern" style="background-color: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 6px; font-size: 0.88rem; outline: none; cursor: pointer;">
+            <option value="ym" selected>年 / 月 (例: 2024 / 05 / Photos) — 預設</option>
+            <option value="ymd">年 / 月-日 (例: 2024 / 05-20 / Photos)</option>
+            <option value="y">僅按年份 (例: 2024 / Photos)</option>
+          </select>
+        </div>
       </div>
     </details>
   </div>
@@ -486,6 +494,9 @@
         document.getElementById('sourceDir').value = config.source_dir || '';
         document.getElementById('destDir').value = config.dest_dir || '';
         document.getElementById('skipExisting').checked = config.skip_existing || false;
+        if (config.folder_pattern) {
+          document.getElementById('folderPattern').value = config.folder_pattern;
+        }
       }
     });
 
@@ -569,7 +580,8 @@
       dry_run: document.getElementById('dryRun').checked,
       smart_screenshot: document.getElementById('smartScreenshot').checked,
       screenshot_strict_mode: document.getElementById('screenshotStrict').checked,
-      onedrive_protect: document.getElementById('onedriveProtect').checked
+      onedrive_protect: document.getElementById('onedriveProtect').checked,
+      folder_pattern: document.getElementById('folderPattern').value
     };
   }
 

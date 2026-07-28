@@ -427,9 +427,10 @@ class AppConfig:
     _instance: Optional['AppConfig'] = None
 
     def __init__(self):
-        self.source_dir    = ""
-        self.dest_dir      = ""
-        self.skip_existing = False
+        self.source_dir     = ""
+        self.dest_dir       = ""
+        self.skip_existing  = False
+        self.folder_pattern = "ym"
         self.load()
 
     @classmethod
@@ -443,9 +444,10 @@ class AppConfig:
             try:
                 with open(ConfigConstants.CONFIG_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self.source_dir    = data.get('source', '')
-                    self.dest_dir      = data.get('dest', '')
-                    self.skip_existing = data.get('skip_existing', False)
+                    self.source_dir     = data.get('source', '')
+                    self.dest_dir       = data.get('dest', '')
+                    self.skip_existing  = data.get('skip_existing', False)
+                    self.folder_pattern = data.get('folder_pattern', 'ym')
             except Exception:
                 pass
 
@@ -455,7 +457,8 @@ class AppConfig:
                 json.dump({
                     'source': self.source_dir,
                     'dest': self.dest_dir,
-                    'skip_existing': self.skip_existing
+                    'skip_existing': self.skip_existing,
+                    'folder_pattern': self.folder_pattern
                 }, f, indent=4)
         except Exception as e:
             print(f"⚠️ 無法儲存設定: {e}")
@@ -1351,7 +1354,15 @@ class Processor:
 
         if date_obj:
             type_folder  = "_LivePhotos" if is_live else ("Photos" if is_photo else "Videos")
-            final_sub    = os.path.join(date_obj.strftime("%Y"), date_obj.strftime("%m"), type_folder) if date_obj else type_folder
+            pattern = self.config.get('folder_pattern', 'ym')
+            if pattern == 'ymd':
+                date_path = os.path.join(date_obj.strftime("%Y"), date_obj.strftime("%m-%d"))
+            elif pattern == 'y':
+                date_path = date_obj.strftime("%Y")
+            else:
+                date_path = os.path.join(date_obj.strftime("%Y"), date_obj.strftime("%m"))
+
+            final_sub = os.path.join(date_path, type_folder)
             
             # GPS 分類 (雲端檔案不進行 GPS 解析)
             if self.config['gps_enabled'] and not is_cloud:
@@ -1521,7 +1532,8 @@ class WebBridge:
         return {
             "source_dir": self._app_config.source_dir,
             "dest_dir": self._app_config.dest_dir,
-            "skip_existing": bool(self._app_config.skip_existing)
+            "skip_existing": bool(self._app_config.skip_existing),
+            "folder_pattern": getattr(self._app_config, 'folder_pattern', 'ym')
         }
 
     def get_updates(self):
@@ -1576,6 +1588,7 @@ class WebBridge:
         self._app_config.source_dir = src
         self._app_config.dest_dir = dst
         self._app_config.skip_existing = config_dict.get('skip_existing', False)
+        self._app_config.folder_pattern = config_dict.get('folder_pattern', 'ym')
         self._app_config.save()
 
         cfg = {
@@ -1591,7 +1604,8 @@ class WebBridge:
             'dry_run': config_dict.get('dry_run', False),
             'smart_screenshot': config_dict.get('smart_screenshot', True),
             'screenshot_strict_mode': config_dict.get('screenshot_strict_mode', True),
-            'onedrive_protect': config_dict.get('onedrive_protect', True)
+            'onedrive_protect': config_dict.get('onedrive_protect', True),
+            'folder_pattern': config_dict.get('folder_pattern', 'ym')
         }
 
         self._processor = Processor(cfg, progress_callback=self._on_progress, status_callback=self._on_status)
