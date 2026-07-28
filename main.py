@@ -1328,24 +1328,16 @@ class Processor:
 
         # 2. 重複檔案去重 (將 is_cloud 傳入 check_dup)
         dupe = self._check_dup(file_path, f_size, is_cloud)
-        if dupe == "DEST_DUPE":
-            self.logger.warn(f"[略過] 目標已存在: {filename}")
-            with self.stats_lock: self.stats['skipped'] += 1
-            if self.config['resume_enabled'] and not self.config.get('dry_run'):
-                self._hist_update(file_path, "SKIPPED_DEST_DUPE")
-            if self.config.get('dry_run'):
-                with self.preview_lock: self.preview_log.append([file_path, "SKIP (Dest Dupe)", "-", "Target exists"])
-            return
-        elif dupe == "SRC_DUPE":
-            if self.config['mode'] == 'copy':
-                self.logger.warn(f"[略過] 來源重複: {filename}")
+        if dupe in ("DEST_DUPE", "SRC_DUPE"):
+            if self.config['mode'] == 'move':
+                self._transfer_to(file_path, dst_root, "_Duplicates", filename, "重複")
+            else:
+                self.logger.warn(f"[略過] 發現重複內容: {filename}")
                 with self.stats_lock: self.stats['skipped'] += 1
                 if self.config['resume_enabled'] and not self.config.get('dry_run'):
-                    self._hist_update(file_path, "SKIPPED_SRC_DUPE")
+                    self._hist_update(file_path, f"SKIPPED_{dupe}")
                 if self.config.get('dry_run'):
-                    with self.preview_lock: self.preview_log.append([file_path, "SKIP (Source Dupe)", "-", "Src duplicate"])
-            else:
-                self._transfer_to(file_path, dst_root, "_Duplicates", filename, "重複")
+                    with self.preview_lock: self.preview_log.append([file_path, f"SKIP ({dupe})", "-", "Duplicate content"])
             return
 
         # 3. 模糊偵測 (如果是雲端預留檔案則跳過)
@@ -1531,6 +1523,8 @@ class Processor:
             rec = self.history_db[src]
         try:
             if abs(os.path.getmtime(src) - rec['mtime']) > 2.0 or size != rec['size']: return False
+            if self.config.get('mode') == 'move' and rec.get('dest') in ("SKIPPED_DEST_DUPE", "SKIPPED_SRC_DUPE"):
+                return False
             if rec['dest'] not in ("SKIPPED_DEST_DUPE", "SKIPPED_SRC_DUPE") and not os.path.exists(str(rec['dest'])): return False
             return True
         except Exception: return False
