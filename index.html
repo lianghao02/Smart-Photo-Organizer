@@ -449,6 +449,7 @@
     <button class="btn btn-primary" id="btnStart" onclick="startProcess()">▶ 開始整理</button>
     <button class="btn btn-warning" id="btnPause" disabled onclick="togglePause()">⏸ 暫停</button>
     <button class="btn btn-danger" id="btnStop" disabled onclick="stopProcess()">⏹ 停止</button>
+    <button class="btn" id="btnOpenDest" style="background: rgba(56, 189, 248, 0.15); color: var(--accent-color); border: 1px solid var(--accent-color);" onclick="openDestFolder()">📂 開啟目標資料夾</button>
   </div>
 
   <!-- Dashboard & Log -->
@@ -623,6 +624,14 @@
     }
   }
 
+  function openDestFolder() {
+    if (!checkPyWebview()) return;
+    const path = document.getElementById('destDir').value || document.getElementById('sourceDir').value;
+    pywebview.api.open_dest_folder(path).then(res => {
+      if (res && res.error) alert(res.error);
+    });
+  }
+
   function stopProcess() {
     if (!checkPyWebview()) return;
     if (confirm("確定要停止目前的任務嗎？")) {
@@ -686,6 +695,7 @@
 
   function onProcessFinished(msg) {
     setUiState(false);
+    appendLog("💡 點擊控制列的 [📂 開啟目標資料夾] 按鈕可直接檢視整理成果。", "success");
     if (msg) alert(msg);
   }
 

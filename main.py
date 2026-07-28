@@ -1575,6 +1575,18 @@ class WebBridge:
             self._logger.error(f"選擇資料夾失敗: {e}")
         return ""
 
+    def open_dest_folder(self, folder_path=None):
+        target = folder_path.strip() if (folder_path and isinstance(folder_path, str)) else self._app_config.dest_dir
+        if not target or not os.path.exists(target):
+            target = self._app_config.source_dir
+        if target and os.path.exists(target):
+            try:
+                os.startfile(target)
+                return {"success": True}
+            except Exception as e:
+                return {"error": str(e)}
+        return {"error": "資料夾不存在！"}
+
     def start_process(self, config_dict):
         src = config_dict.get('source_dir', '').strip()
         dst = config_dict.get('dest_dir', '').strip()
