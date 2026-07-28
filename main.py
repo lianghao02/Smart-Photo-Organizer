@@ -1646,5 +1646,5 @@ if __name__ == "__main__":
         resizable=True
     )
     bridge.set_window(window)
-    webview.start(debug=False)
+    webview.start(http_server=True, debug=False)
 

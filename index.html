@@ -179,7 +179,7 @@
     /* Mode Selection */
     .mode-container {
       display: flex;
-      gap: 20px;
+      gap: 24px;
       margin-bottom: 16px;
       padding-bottom: 14px;
       border-bottom: 1px dashed var(--border-color);
@@ -190,6 +190,7 @@
       gap: 8px;
       cursor: pointer;
       font-size: 0.92rem;
+      font-weight: 500;
     }
     input[type="radio"], input[type="checkbox"] {
       accent-color: var(--accent-color);
@@ -198,32 +199,67 @@
       cursor: pointer;
     }
 
-    /* Options Grid (3 Columns) */
-    .options-grid {
+    /* Core Options Grid */
+    .core-options-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       gap: 16px;
+      margin-bottom: 12px;
     }
-    .option-column {
+    .core-column {
       display: flex;
       flex-direction: column;
       gap: 10px;
     }
-    .column-header {
-      font-size: 0.85rem;
-      font-weight: 700;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      margin-bottom: 4px;
-      letter-spacing: 0.5px;
-    }
+
     .checkbox-label {
       display: flex;
       align-items: flex-start;
       gap: 8px;
       cursor: pointer;
       font-size: 0.88rem;
-      line-height: 1.3;
+      line-height: 1.35;
+    }
+    .checkbox-label.sub-option {
+      margin-left: 24px;
+      font-size: 0.83rem;
+      color: var(--text-muted);
+      border-left: 2px solid var(--border-color);
+      padding-left: 8px;
+    }
+
+    /* Advanced Collapsible Accordion */
+    details {
+      background-color: rgba(51, 65, 85, 0.4);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px 14px;
+      transition: all 0.2s ease;
+    }
+    details[open] {
+      background-color: rgba(51, 65, 85, 0.7);
+    }
+    summary {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      outline: none;
+    }
+    summary:hover {
+      color: var(--accent-color);
+    }
+    .advanced-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px 24px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px dashed var(--border-color);
     }
 
     /* Controls Bar */
@@ -332,7 +368,7 @@
 
   <!-- Mode & Options -->
   <div class="card">
-    <div class="card-title">⚙️ 整理模式與選項</div>
+    <div class="card-title">⚙️ 整理模式與規則</div>
 
     <!-- Mode radios -->
     <div class="mode-container">
@@ -347,53 +383,57 @@
       </label>
     </div>
 
-    <!-- Options 3 Columns -->
-    <div class="options-grid">
-      <!-- Col 1 -->
-      <div class="option-column">
-        <div class="column-header">📁 檔案與結構</div>
+    <!-- Core Options (3 Columns) -->
+    <div class="core-options-grid">
+      <!-- Col 1: Screenshot -->
+      <div class="core-column">
         <label class="checkbox-label">
-          <input type="checkbox" id="renameEnabled"> 強制拍攝時間重新命名為序號 (001.jpg)
+          <input type="checkbox" id="smartScreenshot" checked onchange="onSmartScreenshotChange()"> 📱 自動隔離螢幕截圖 (移至 _Screenshots)
         </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="gpsEnabled"> 啟用 GPS 地點分類 (例如: 台灣_台北市)
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="cleanEmpty"> 刪除來源空資料夾
+        <label class="checkbox-label sub-option">
+          <input type="checkbox" id="screenshotStrict" checked> 僅抓取手機直式截圖 (避免誤判網路梗圖)
         </label>
       </div>
 
-      <!-- Col 2 -->
-      <div class="option-column">
-        <div class="column-header">🛡️ 防護與效能</div>
+      <!-- Col 2: Rename -->
+      <div class="core-column">
         <label class="checkbox-label">
-          <input type="checkbox" id="onedriveProtect" checked> 啟用 OneDrive 雲端防護 (防強制下載)
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="skipExisting"> 跳過目標已存在的檔案 (去重)
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="resumeEnabled" checked> 啟用斷點續傳 (記錄已處理項目)
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="dryRun"> 預覽模式 (Dry Run 模擬不寫入硬碟)
+          <input type="checkbox" id="renameEnabled"> 🔢 依拍攝時間重新命名 (001.jpg, 002.jpg...)
         </label>
       </div>
 
-      <!-- Col 3 -->
-      <div class="option-column">
-        <div class="column-header">🧠 AI 智慧過濾</div>
+      <!-- Col 3: GPS -->
+      <div class="core-column">
         <label class="checkbox-label">
-          <input type="checkbox" id="smartScreenshot" checked> 智慧截圖辨識 (隔離至 _Screenshots)
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="screenshotStrict" checked> 嚴格保護模式 (僅抓取直式截圖)
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="blurCheck"> 模糊偵測 (過濾晃動/模糊照片)
+          <input type="checkbox" id="gpsEnabled"> 🗺️ 依拍照地點建資料夾 (如：台灣_台北市)
         </label>
       </div>
     </div>
+
+    <!-- Advanced Collapsible Section -->
+    <details>
+      <summary>⚙️ 進階與安全設定 (預設已為您開啟最安全防護，點擊展開調整)</summary>
+      <div class="advanced-grid">
+        <label class="checkbox-label">
+          <input type="checkbox" id="onedriveProtect" checked> ☁️ OneDrive 省流量防護 (防止自動觸發大量下載)
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="skipExisting"> 👯 跳過已存在的重複照片 (避免檔案重複)
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="resumeEnabled" checked> 💾 自動記錄進度 (中斷後重新開啟可接著整理)
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="dryRun"> 🧪 模擬測試模式 (不搬移任何檔案，僅產出報表)
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="blurCheck"> 🔍 自動挑出模糊照片 (隔離至 _Blurry 資料夾)
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="cleanEmpty"> 🧹 自動清理搬空的舊資料夾
+        </label>
+      </div>
+    </details>
   </div>
 
   <!-- Controls -->
@@ -449,7 +489,6 @@
       }
     });
 
-    // 啟動死鎖免疫的 200ms 輪詢 (Polling) 機制
     setInterval(pollUpdates, 200);
   });
 
@@ -458,32 +497,39 @@
     pywebview.api.get_updates().then(data => {
       if (!data) return;
       
-      // 處理 Log 佇列
       if (data.logs && data.logs.length > 0) {
         data.logs.forEach(item => {
           appendLog(item.msg, item.level);
         });
       }
       
-      // 處理進度儀表板
       if (data.progress) {
         updateProgress(data.progress);
       }
 
-      // 處理任務結束訊息
       if (data.finished_msg) {
         onProcessFinished(data.finished_msg);
       }
     }).catch(err => {});
   }
 
+  function checkPyWebview() {
+    if (!window.pywebview || !pywebview.api) {
+      alert("⚠️ 請透過雙擊 start_organizer.bat 或執行 python main.py 啟動程式，方可選取本機資料夾！");
+      return false;
+    }
+    return true;
+  }
+
   function selectSourceFolder() {
+    if (!checkPyWebview()) return;
     pywebview.api.select_source_folder().then(folder => {
       if (folder) document.getElementById('sourceDir').value = folder;
     });
   }
 
   function selectDestFolder() {
+    if (!checkPyWebview()) return;
     pywebview.api.select_dest_folder().then(folder => {
       if (folder) document.getElementById('destDir').value = folder;
     });
@@ -500,6 +546,13 @@
       destInput.disabled = false;
       btnBrowseDest.disabled = false;
     }
+  }
+
+  function onSmartScreenshotChange() {
+    const isChecked = document.getElementById('smartScreenshot').checked;
+    const strict = document.getElementById('screenshotStrict');
+    strict.disabled = !isChecked;
+    if (!isChecked) strict.checked = false;
   }
 
   function getConfigPayload() {
@@ -521,6 +574,7 @@
   }
 
   function startProcess() {
+    if (!checkPyWebview()) return;
     const config = getConfigPayload();
     if (!config.source_dir) {
       alert("請選擇來源資料夾！");
@@ -541,6 +595,7 @@
   }
 
   function togglePause() {
+    if (!checkPyWebview()) return;
     if (!isPaused) {
       pywebview.api.pause_process().then(() => {
         isPaused = true;
@@ -557,6 +612,7 @@
   }
 
   function stopProcess() {
+    if (!checkPyWebview()) return;
     if (confirm("確定要停止目前的任務嗎？")) {
       pywebview.api.stop_process().then(() => {
         setUiState(false);
