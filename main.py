@@ -1285,6 +1285,15 @@ class Processor:
         # ---------------- 一般整理模式 (Copy/Move) ----------------
         if not (is_photo or is_video): return
 
+        # 0. 提前解析日期 (用於分類與隔離檔案命名)
+        date_obj = self.date_parser.get_date(file_path, is_photo, is_cloud, self.shell_reader)
+        if not date_obj:
+            try:
+                ctime = os.path.getctime(file_path)
+                date_obj = datetime.datetime.fromtimestamp(ctime)
+            except Exception:
+                pass
+
         # 1. 螢幕截圖隔離
         is_screenshot = False
         if any(kw in filename.lower() for kw in ConfigConstants.SCREENSHOT_KEYWORDS):
@@ -1323,14 +1332,14 @@ class Processor:
                     is_screenshot = True
 
         if is_screenshot:
-            self._transfer_to(file_path, dst_root, "_Screenshots", filename, "截圖")
+            self._transfer_to(file_path, dst_root, "_Screenshots", filename, "截圖", date_obj)
             return
 
         # 2. 重複檔案去重 (將 is_cloud 傳入 check_dup)
         dupe = self._check_dup(file_path, f_size, is_cloud)
         if dupe in ("DEST_DUPE", "SRC_DUPE"):
             if self.config['mode'] == 'move':
-                self._transfer_to(file_path, dst_root, "_Duplicates", filename, "重複")
+                self._transfer_to(file_path, dst_root, "_Duplicates", filename, "重複", date_obj)
             else:
                 self.logger.warn(f"[略過] 發現重複內容: {filename}")
                 with self.stats_lock: self.stats['skipped'] += 1
@@ -1344,17 +1353,8 @@ class Processor:
         if self.config['blur_check_enabled'] and is_photo and not is_cloud:
             is_blur, score = ImageOps.is_blurry(file_path)
             if is_blur:
-                self._transfer_to(file_path, dst_root, "_Blurry", filename, f"模糊({int(score)})")
+                self._transfer_to(file_path, dst_root, "_Blurry", filename, f"模糊({int(score)})", date_obj)
                 return
-
-        # 4. 解析日期 (傳入 is_cloud，若是雲端檔案則跳過 EXIF 解析，但傳入 shell_reader)
-        date_obj = self.date_parser.get_date(file_path, is_photo, is_cloud, self.shell_reader)
-        if not date_obj:
-            try:
-                ctime = os.path.getctime(file_path)
-                date_obj = datetime.datetime.fromtimestamp(ctime)
-            except Exception:
-                pass
 
         # 5. 原況相片 (Live Photo) 配對判定 (若在雲端，os.path.exists 可能需要注意，但這是安全非內容讀取)
         is_live = False
@@ -1398,7 +1398,7 @@ class Processor:
         else:
             self._transfer_to(file_path, dst_root, "No_Date", filename, "整理")
 
-    def _transfer_to(self, src, root, sub, name, tag):
+    def _transfer_to(self, src, root, sub, name, tag, date_obj=None):
         d = os.path.join(root, sub)
         if not self.config.get('dry_run'): os.makedirs(d, exist_ok=True)
         ext = os.path.splitext(name)[1]
@@ -1406,7 +1406,18 @@ class Processor:
             reserved = self.dry_run_paths if self.config.get('dry_run') else None
             if self.config.get('rename_enabled'):
                 rename_mode = self.config.get('rename_mode', 'date_seq')
-                t = FSUtils.get_sequence_name(d, "Unknown", ext, self.dir_counters, rename_mode, reserved)
+                prefix_map = {
+                    "_Duplicates": "DUP",
+                    "_Screenshots": "Shot",
+                    "_Blurry": "Blur",
+                    "No_Date": "NoDate"
+                }
+                base_pref = prefix_map.get(sub, "File")
+                if date_obj and rename_mode == "date_seq":
+                    pref = f"{base_pref}_{date_obj.strftime('%Y_%m_%d')}"
+                else:
+                    pref = base_pref
+                t = FSUtils.get_sequence_name(d, pref, ext, self.dir_counters, rename_mode, reserved)
             else:
                 t = FSUtils.get_unique_path(os.path.join(d, name), reserved)
         self._execute(src, t, tag)
