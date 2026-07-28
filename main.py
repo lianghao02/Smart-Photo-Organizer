@@ -471,7 +471,7 @@ class FSUtils:
 
     @staticmethod
     def get_unique_path(path: str, reserved_paths: Optional[set] = None) -> str:
-        """回傳不重複的路徑（若已存在或已預留則追加 _N）"""
+        """回傳不重複的路徑（若已存在或已預留則智慧歸併 _N，避免無限產生 _1_1_1）"""
         def is_taken(p: str) -> bool:
             if os.path.exists(p): return True
             if reserved_paths is not None and p in reserved_paths: return True
@@ -479,13 +479,22 @@ class FSUtils:
 
         if not is_taken(path):
             return path
-        base, ext = os.path.splitext(path)
+
+        dir_name, file_name = os.path.split(path)
+        base, ext = os.path.splitext(file_name)
+
+        # 智慧剝離末尾重複的 _1_1 尾綴，恢復乾淨檔名底色
+        clean_base = re.sub(r'(?:_\d+)+$', '', base)
+        if not clean_base:
+            clean_base = base
+
         counter = 1
-        new_path = f"{base}_{counter}{ext}"
-        while is_taken(new_path):
+        while True:
+            candidate_name = f"{clean_base}_{counter}{ext}"
+            candidate_path = os.path.join(dir_name, candidate_name)
+            if not is_taken(candidate_path):
+                return candidate_path
             counter += 1
-            new_path = f"{base}_{counter}{ext}"
-        return new_path
 
     @staticmethod
     def remove_empty_folders(path: str):
