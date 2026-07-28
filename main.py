@@ -1381,6 +1381,12 @@ class Processor:
         self._execute(src, t, tag)
 
     def _execute(self, src, dst, tag):
+        if os.path.abspath(src) == os.path.abspath(dst):
+            self.logger.info(f"[{tag}] 已在正確位置: {os.path.basename(src)}")
+            with self.stats_lock:
+                self.stats['skipped'] += 1
+            return
+
         parent = os.path.basename(os.path.dirname(dst))
         if self.config.get('dry_run'):
             with self.preview_lock:
