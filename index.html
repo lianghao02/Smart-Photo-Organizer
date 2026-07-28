@@ -463,17 +463,14 @@
 
       <!-- Col 2: Rename -->
       <div class="core-column">
-        <label class="checkbox-label" style="font-weight: 600;">
-          <input type="checkbox" id="renameEnabled" onchange="onRenameChange()"> 🔢 統一重新命名照片
+        <label for="renameMode" style="font-weight: 600; font-size: 0.88rem; display: flex; align-items: center; gap: 4px; margin-bottom: 4px; color: var(--text-main);">
+          🔢 重新命名規則：
         </label>
-        <div id="renameSubOptions" style="margin-left: 20px; margin-top: 6px; display: none; flex-direction: column; gap: 4px;">
-          <label style="font-size: 0.82rem; cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--text-main);">
-            <input type="radio" name="renameMode" value="datetime" checked> 🕒 精確時間 (例: 20240520_143015.jpg)
-          </label>
-          <label style="font-size: 0.82rem; cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--text-main);">
-            <input type="radio" name="renameMode" value="sequence"> 🔢 資料夾流水號 (例: 001.jpg, 002.jpg...)
-          </label>
-        </div>
+        <select id="renameMode" style="width: 100%; background-color: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-color); padding: 5px 8px; border-radius: 6px; font-size: 0.84rem; outline: none; cursor: pointer;">
+          <option value="none" selected>保留原始檔名 (例: IMG_1234.jpg)</option>
+          <option value="date_seq">📅 依拍攝日期 + 流水號 (例: 2024_05_20_001.jpg)</option>
+          <option value="pure_seq">🔢 依純資料夾流水號 (例: 001.jpg, 002.jpg)</option>
+        </select>
       </div>
 
       <!-- Col 3: GPS -->
@@ -573,8 +570,7 @@
           document.getElementById('folderPattern').value = config.folder_pattern;
         }
         if (config.rename_mode) {
-          const radio = document.querySelector(`input[name="renameMode"][value="${config.rename_mode}"]`);
-          if (radio) radio.checked = true;
+          document.getElementById('renameMode').value = config.rename_mode;
         }
       }
     });
@@ -625,10 +621,17 @@
     });
   }
 
-  function onRenameChange() {
-    const isChecked = document.getElementById('renameEnabled').checked;
-    const sub = document.getElementById('renameSubOptions');
-    sub.style.display = isChecked ? 'flex' : 'none';
+  function onModeChange() {
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+    const destInput = document.getElementById('destDir');
+    const btnBrowseDest = document.getElementById('btnBrowseDest');
+    if (mode === 'cleanup') {
+      destInput.disabled = true;
+      btnBrowseDest.disabled = true;
+    } else {
+      destInput.disabled = false;
+      btnBrowseDest.disabled = false;
+    }
   }
 
   function onSmartScreenshotChange() {
@@ -639,14 +642,14 @@
   }
 
   function getConfigPayload() {
-    const renameModeEl = document.querySelector('input[name="renameMode"]:checked');
+    const renameModeVal = document.getElementById('renameMode').value;
     return {
       source_dir: document.getElementById('sourceDir').value,
       dest_dir: document.getElementById('destDir').value,
       mode: document.querySelector('input[name="mode"]:checked').value,
       clean_empty: document.getElementById('cleanEmpty').checked,
-      rename_enabled: document.getElementById('renameEnabled').checked,
-      rename_mode: renameModeEl ? renameModeEl.value : 'datetime',
+      rename_mode: renameModeVal,
+      rename_enabled: renameModeVal !== 'none',
       gps_enabled: document.getElementById('gpsEnabled').checked,
       resume_enabled: document.getElementById('resumeEnabled').checked,
       blur_check_enabled: document.getElementById('blurCheck').checked,
