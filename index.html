@@ -486,25 +486,16 @@
 
     <!-- Advanced Collapsible Section -->
     <details>
-      <summary>⚙️ 進階與安全設定 (預設已為您開啟最安全防護，點擊展開調整)</summary>
+      <summary>⚙️ 進階與安全設定 (預設已開啟斷點續傳、重複去重與雲端安全防護)</summary>
       <div class="advanced-grid">
         <label class="checkbox-label">
           <input type="checkbox" id="onedriveProtect" checked> ☁️ 雲端硬碟省流量防護 (OneDrive / Google Drive 防下載)
         </label>
         <label class="checkbox-label">
-          <input type="checkbox" id="skipExisting"> 👯 跳過已存在的重複照片 (避免檔案重複)
+          <input type="checkbox" id="dryRun"> 🧪 模擬測試模式 (不搬移任何檔案，僅產出預覽報表)
         </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="resumeEnabled" checked> 💾 自動記錄進度 (中斷後重新開啟可接著整理)
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="dryRun"> 🧪 模擬測試模式 (不搬移任何檔案，僅產出報表)
-        </label>
-        <label class="checkbox-label">
+        <label class="checkbox-label" style="grid-column: span 2;">
           <input type="checkbox" id="blurCheck"> 🔍 自動挑出模糊照片 (隔離至 _Blurry 資料夾)
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="cleanEmpty"> 🧹 自動清理搬空的舊資料夾
         </label>
         <div style="grid-column: span 2; display: flex; align-items: center; gap: 10px; padding-top: 8px; border-top: 1px dashed var(--border-color); margin-top: 4px;">
           <label for="folderPattern" style="font-weight: 600; font-size: 0.88rem; color: var(--text-main);">📁 資料夾分類層級結構：</label>
@@ -568,7 +559,6 @@
       if (config) {
         document.getElementById('sourceDir').value = config.source_dir || '';
         document.getElementById('destDir').value = config.dest_dir || '';
-        document.getElementById('skipExisting').checked = config.skip_existing || false;
         if (config.folder_pattern) {
           document.getElementById('folderPattern').value = config.folder_pattern;
         }
@@ -640,17 +630,18 @@
 
   function getConfigPayload() {
     const renameModeRadio = document.querySelector('input[name="renameMode"]:checked');
+    const mode = document.querySelector('input[name="mode"]:checked').value;
     return {
       source_dir: document.getElementById('sourceDir').value,
       dest_dir: document.getElementById('destDir').value,
-      mode: document.querySelector('input[name="mode"]:checked').value,
-      clean_empty: document.getElementById('cleanEmpty').checked,
+      mode: mode,
+      clean_empty: (mode === 'move'),
       rename_enabled: document.getElementById('renameEnabled').checked,
       rename_mode: renameModeRadio ? renameModeRadio.value : 'date_seq',
       gps_enabled: document.getElementById('gpsEnabled').checked,
-      resume_enabled: document.getElementById('resumeEnabled').checked,
+      resume_enabled: true,
       blur_check_enabled: document.getElementById('blurCheck').checked,
-      skip_existing: document.getElementById('skipExisting').checked,
+      skip_existing: true,
       dry_run: document.getElementById('dryRun').checked,
       smart_screenshot: document.getElementById('smartScreenshot').checked,
       screenshot_strict_mode: document.getElementById('screenshotStrict').checked,
