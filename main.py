@@ -1567,13 +1567,16 @@ class SystemTrayManager:
 
     def minimize(self, window):
         self.window = window
+        # 1. 優先進行標準縮小，確保不會發生視窗憑空消失的狀況
         try:
-            window.hide()
+            window.minimize()
         except Exception:
             pass
 
         with self._lock:
             if self.icon is not None:
+                try: window.hide()
+                except Exception: pass
                 return
 
             try:
@@ -1588,14 +1591,27 @@ class SystemTrayManager:
                 self.icon = pystray.Icon("SmartPhotoOrganizer", icon_img, f"{ConfigConstants.APP_NAME} (背景整理中)", menu)
                 self.icon.default_action = self.restore
                 
-                threading.Thread(target=self.icon.run, daemon=True).start()
+                def _run_icon():
+                    try:
+                        self.icon.run()
+                    except Exception as err:
+                        Logger.get_instance().error(f"系統列圖示異常: {err}")
+                        self.restore()
+
+                threading.Thread(target=_run_icon, daemon=True).start()
+                
+                # 託盤圖示啟動後隱藏主視窗
+                try: window.hide()
+                except Exception: pass
                 
                 try:
-                    self.icon.notify("已縮小至右下角系統列，照片整理任務持續於背景執行中。", f"{ConfigConstants.APP_NAME}")
+                    self.icon.notify("已縮小至右下角系統列 (若未看到，請點擊右下角 ^ 箭頭展開)", f"{ConfigConstants.APP_NAME}")
                 except Exception:
                     pass
             except Exception as e:
-                Logger.get_instance().error(f"無法建立系統列圖示: {e}")
+                Logger.get_instance().error(f"無法建立系統列圖示，退回標準縮小: {e}")
+                try: window.minimize()
+                except Exception: pass
 
     def restore(self, icon=None, item=None):
         if self.window:
