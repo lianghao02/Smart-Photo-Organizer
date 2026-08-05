@@ -1445,11 +1445,24 @@ class Processor:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         if self.config['mode'] in ('move', 'cleanup'):
             try:
-                shutil.move(src, dst)
+                # 同一磁碟區優先使用原生的 os.replace，原子性目錄更名，100% 杜絕 copy2 降級複製與額外容量消耗
+                src_drive = os.path.splitdrive(src)[0].upper()
+                dst_drive = os.path.splitdrive(dst)[0].upper()
+                if src_drive and src_drive == dst_drive:
+                    os.replace(src, dst)
+                else:
+                    shutil.move(src, dst)
                 self.logger.info(f"[{tag}] 移動: {os.path.basename(src)} → {parent}/{os.path.basename(dst)}")
             except PermissionError as e:
-                self.logger.error(f"❌ 移動失敗 (權限不足，可能正由 OneDrive 同步中被鎖定): {os.path.basename(src)}")
+                self.logger.error(f"❌ 移動失敗 (權限不足，可能正由 Windows / OneDrive 鎖定): {os.path.basename(src)}")
                 raise
+            except Exception as e:
+                try:
+                    shutil.move(src, dst)
+                    self.logger.info(f"[{tag}] 移動: {os.path.basename(src)} → {parent}/{os.path.basename(dst)}")
+                except Exception as err:
+                    self.logger.error(f"❌ 移動失敗: {os.path.basename(src)} - {err}")
+                    raise
         else:
             try:
                 shutil.copy2(src, dst)
