@@ -206,8 +206,23 @@ class WinShellReader:
                     $item = $folder.ParseName($name)
                     
                     if ($item) {
-                        # 12: 拍攝日期, 30: 相機型號, 32: 製造商, 176: 寬度, 178: 高度
+                        # 12: 拍攝日期, 208: 媒體建立日期, 30: 相機型號, 32: 製造商
                         $dateTaken = $folder.GetDetailsOf($item, 12)
+                        if (-not $dateTaken) {
+                            $dateTaken = $folder.GetDetailsOf($item, 208)
+                        }
+                        if (-not $dateTaken) {
+                            for ($idx = 13; $idx -lt 320; $idx++) {
+                                $header = $folder.GetDetailsOf($null, $idx)
+                                if ($header -and ($header -match '拍攝日期|媒體建立日期|Media created|Date taken|連動的媒體')) {
+                                    $val = $folder.GetDetailsOf($item, $idx)
+                                    if ($val) {
+                                        $dateTaken = $val
+                                        break
+                                    }
+                                }
+                            }
+                        }
                         $model = $folder.GetDetailsOf($item, 30)
                         $maker = $folder.GetDetailsOf($item, 32)
                         $width = $folder.GetDetailsOf($item, 176)
