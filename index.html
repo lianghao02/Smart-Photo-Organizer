@@ -515,6 +515,7 @@
     <button class="btn btn-warning" id="btnPause" disabled onclick="togglePause()">⏸ 暫停</button>
     <button class="btn btn-danger" id="btnStop" disabled onclick="stopProcess()">⏹ 停止</button>
     <button class="btn" id="btnOpenDest" style="background: rgba(56, 189, 248, 0.15); color: var(--accent-color); border: 1px solid var(--accent-color);" onclick="openDestFolder()">📂 開啟目標資料夾</button>
+    <button class="btn" id="btnMinimizeTray" style="background: rgba(148, 163, 184, 0.15); color: var(--text-main); border: 1px solid var(--border-color);" onclick="minimizeToTray()">📌 縮小至系統列</button>
   </div>
 
   <!-- Dashboard & Log -->
@@ -694,6 +695,11 @@
     pywebview.api.open_dest_folder(path).then(res => {
       if (res && res.error) alert(res.error);
     });
+  }
+
+  function minimizeToTray() {
+    if (!checkPyWebview()) return;
+    pywebview.api.minimize_to_tray();
   }
 
   function stopProcess() {

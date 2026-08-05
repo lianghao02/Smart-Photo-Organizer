@@ -1546,6 +1546,85 @@ class Processor:
 
 
 # ==============================================================================
+# 模組八.五：SystemTrayManager (系統列托盤圖示管理器)
+# ==============================================================================
+class SystemTrayManager:
+    """系統列托盤圖示管理器 (System Tray Manager)"""
+    def __init__(self, bridge):
+        self.bridge = bridge
+        self.icon = None
+        self.window = None
+        self._lock = threading.Lock()
+
+    def _create_icon_image(self):
+        img = Image.new('RGBA', (64, 64), color=(15, 23, 42, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle((4, 4, 60, 60), radius=12, fill=(30, 41, 59, 255), outline=(56, 189, 248, 255), width=3)
+        draw.rectangle((16, 26, 48, 48), fill=(56, 189, 248, 255))
+        draw.polygon([(16, 26), (24, 16), (40, 16), (48, 26)], fill=(56, 189, 248, 255))
+        draw.ellipse((26, 31, 38, 43), fill=(15, 23, 42, 255))
+        return img
+
+    def minimize(self, window):
+        self.window = window
+        try:
+            window.hide()
+        except Exception:
+            pass
+
+        with self._lock:
+            if self.icon is not None:
+                return
+
+            try:
+                import pystray
+                from pystray import MenuItem as item
+
+                icon_img = self._create_icon_image()
+                menu = pystray.Menu(
+                    item('📌 開啟主視窗', self.restore),
+                    item('❌ 結束程式', self.exit_app)
+                )
+                self.icon = pystray.Icon("SmartPhotoOrganizer", icon_img, f"{ConfigConstants.APP_NAME} (背景整理中)", menu)
+                self.icon.default_action = self.restore
+                
+                threading.Thread(target=self.icon.run, daemon=True).start()
+                
+                try:
+                    self.icon.notify("已縮小至右下角系統列，照片整理任務持續於背景執行中。", f"{ConfigConstants.APP_NAME}")
+                except Exception:
+                    pass
+            except Exception as e:
+                Logger.get_instance().error(f"無法建立系統列圖示: {e}")
+
+    def restore(self, icon=None, item=None):
+        if self.window:
+            try:
+                self.window.show()
+                self.window.restore()
+            except Exception:
+                pass
+        with self._lock:
+            if self.icon:
+                try:
+                    self.icon.stop()
+                except Exception:
+                    pass
+                self.icon = None
+
+    def exit_app(self, icon=None, item=None):
+        if self.bridge and self.bridge._processor:
+            self.bridge._processor.stop()
+        self.restore()
+        if self.window:
+            try:
+                self.window.destroy()
+            except Exception:
+                pass
+        os._exit(0)
+
+
+# ==============================================================================
 # 模組九：WebBridge & Web UI 啟動器 (PyWebView)
 # ==============================================================================
 class WebBridge:
@@ -1554,6 +1633,7 @@ class WebBridge:
         self._logger     = Logger.get_instance()
         self._processor: Any = None
         self._window: Any = None
+        self._tray_manager = SystemTrayManager(self)
         
         self._log_queue = []
         self._latest_progress = None
@@ -1564,6 +1644,10 @@ class WebBridge:
 
     def set_window(self, window):
         self._window = window
+
+    def minimize_to_tray(self):
+        if self._window:
+            self._tray_manager.minimize(self._window)
 
     def get_initial_config(self):
         return {

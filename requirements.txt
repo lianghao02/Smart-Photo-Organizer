@@ -2,3 +2,4 @@ pywebview
 Pillow
 pillow-heif
 geopy
+pystray
