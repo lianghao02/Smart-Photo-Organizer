@@ -937,11 +937,10 @@ class Processor:
                 return self.stats
 
             if self.config.get('rename_enabled') and self.config['mode'] != 'cleanup':
-                if self.status_callback: self.status_callback("正在讀取拍攝時間進行排序 (作法 A)...")
-                self.logger.info("啟動強迫序號模式，正在進行第一階段時間掃描...")
-                file_dates = []
-                for i, f in enumerate(all_files):
-                    if self.stop_event.is_set(): break
+                if self.status_callback: self.status_callback("正在多執行緒平行預讀拍攝時間...")
+                self.logger.info("啟動重命名模式，正在多執行緒平行讀取拍攝時間進行排序...")
+                
+                def _get_file_date(f):
                     ext = str(os.path.splitext(f)[1]).lower()
                     is_photo = ext in ConfigConstants.EXT_PHOTOS
                     is_cloud = False
@@ -954,17 +953,33 @@ class Processor:
                             date_obj = datetime.datetime.fromtimestamp(ctime)
                         except Exception:
                             date_obj = datetime.datetime.min
-                    file_dates.append((f, date_obj))
-                    if i % 100 == 0 and self.status_callback:
-                        self.status_callback(f"正在讀取拍攝時間... ({i}/{total_count})")
-                
+                    return (f, date_obj)
+
+                file_dates = []
+                max_scan_workers = min(32, (os.cpu_count() or 1) + 4)
+                with ThreadPoolExecutor(max_workers=max_scan_workers) as scan_executor:
+                    scan_futures = [scan_executor.submit(_get_file_date, f) for f in all_files]
+                    scanned_count = 0
+                    for future in concurrent.futures.as_completed(scan_futures):
+                        if self.stop_event.is_set():
+                            scan_executor.shutdown(wait=False, cancel_futures=True)
+                            break
+                        try:
+                            res = future.result()
+                            if res: file_dates.append(res)
+                        except Exception:
+                            pass
+                        scanned_count += 1
+                        if scanned_count % 500 == 0 and self.status_callback:
+                            self.status_callback(f"正在平行讀取時間... ({scanned_count}/{total_count})")
+
                 # 依時間排序
                 file_dates.sort(key=lambda x: x[1])
                 all_files = [x[0] for x in file_dates]
                 
                 # 強制使用單執行緒確保序號產生的順序正確
                 max_workers = 1
-                self.logger.info("排序完成，開始依序處理並產生強迫序號...")
+                self.logger.info("時間排序完成，開始按拍攝順序移動與命名...")
             else:
                 self.logger.info(f"共發現 {total_count} 個檔案 ({self._fmt(total_size)})，開始並行處理...")
                 max_workers = min(32, (os.cpu_count() or 1) + 4)
