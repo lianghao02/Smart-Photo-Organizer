@@ -26,9 +26,10 @@ import webview
 
 # --- 選用套件 (降級處理) ---
 try:
-    from PIL import Image  # type: ignore
+    from PIL import Image, ImageDraw  # type: ignore
 except ImportError:
     Image = None
+    ImageDraw = None
 
 try:
     import pillow_heif  # type: ignore
