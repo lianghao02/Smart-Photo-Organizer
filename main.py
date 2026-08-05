@@ -927,6 +927,7 @@ class Processor:
 
             if self.status_callback: self.status_callback("正在掃描檔案...")
             all_files, total_size = self._scan_files(src_root)
+            self.source_files_set = set(os.path.abspath(f) for f in all_files)
             total_count = len(all_files)
             with self.stats_lock: self.stats['total_size'] = total_size
 
@@ -1475,8 +1476,11 @@ class Processor:
 
         f_p = f_f = None
         if self.config.get('skip_existing') and f_size in self.dst_index:
+            source_set = getattr(self, 'source_files_set', set())
             for dp in self.dst_index[f_size]:
-                if os.path.abspath(path) == os.path.abspath(dp): continue
+                abs_dp = os.path.abspath(dp)
+                if os.path.abspath(path) == abs_dp: continue
+                if abs_dp in source_set: continue
                 if not f_p: f_p = Dedup.get_partial_hash(path)
                 if f_p == Dedup.get_partial_hash(dp):
                     if not f_f: f_f = Dedup.get_hash(path)
