@@ -654,8 +654,8 @@ class DateParser:
             d = self._get_exif_date(path)
             if d: return d
 
-        # 2.5 雲端 Shell 屬性拍攝日期 - 僅在雲端且有 shell_reader 時執行，防止下載
-        if is_cloud and shell_reader:
+        # 2.5 Shell 屬性拍攝/媒體建立日期 (影片與照片) - 無論本機或雲端皆可透過 Shell 讀取 Property 12 (日期/Media Created)
+        if shell_reader:
             props = shell_reader.get_properties(path)
             if props.get('success') and props.get('date_taken'):
                 d = parse_shell_date(props.get('date_taken'))
