@@ -2196,14 +2196,15 @@ class WebBridge:
         return {"success": True}
 
     def _run_takeout_audit(self, src: str, dst: str, is_dry_run: bool):
+        job_id = f"job_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        db_path = os.path.join(dst, "_ImportTemp", "takeout_import.db")
+        state_mgr = import_state.TakeoutStateManager(db_path)
+        job_type = import_state.JobType.PREVIEW if is_dry_run else import_state.JobType.IMPORT
+
         try:
             self._on_status("running")
             self._on_log("=== 📦 啟動 Takeout ZIP 第一階段：安全防護、SQLite 與 ZIP 快速盤點 ===", "info")
 
-            db_path = os.path.join(dst, "_ImportTemp", "takeout_import.db")
-            state_mgr = import_state.TakeoutStateManager(db_path)
-            job_type = import_state.JobType.PREVIEW if is_dry_run else import_state.JobType.IMPORT
-            job_id = f"job_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
             state_mgr.create_job(job_id, job_type, src, dst)
 
             zip_files = []
@@ -2216,11 +2217,21 @@ class WebBridge:
                             zip_files.append(os.path.join(root, f))
 
             if not zip_files:
+                state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
                 self._on_log("❌ 來源路徑下未搜尋到任何 .zip 封存檔！", "error")
                 self._on_status("paused")
                 return
 
+            if len(zip_files) > takeout_zip.TakeoutZipScanner.MAX_ZIP_COUNT:
+                state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
+                self._on_log(f"❌ 超過單一任務 ZIP 數量上限 ({len(zip_files)} > {takeout_zip.TakeoutZipScanner.MAX_ZIP_COUNT})！", "error")
+                self._on_status("paused")
+                return
+
             self._on_log(f"🔍 搜尋到 {len(zip_files)} 個 Takeout ZIP 封存檔，開啟 ZipInfo 安全檢驗與中央目錄掃描...", "info")
+
+            total_valid_members = 0
+            archive_errors = 0
 
             for zp in zip_files:
                 st = os.stat(zp)
@@ -2234,12 +2245,28 @@ class WebBridge:
                         m['archive_id'] = arc_id
                         m['archive_fingerprint'] = fingerprint
                         m['status'] = import_state.TakeoutState.SECURITY_REJECTED if not m['is_safe'] else import_state.TakeoutState.SECURITY_VALIDATED
-                        state_mgr.register_member(m)
+                        if m['is_safe']:
+                            total_valid_members += 1
+                    
+                    state_mgr.register_members_batch(members)
+                    state_mgr.update_archive_status(arc_id, "COMPLETED")
                 except Exception as e:
-                    self._on_log(f"⚠️ 封存檔安全驗證異常 [{os.path.basename(zp)}]: {e}", "warning")
+                    archive_errors += 1
+                    state_mgr.update_archive_status(arc_id, "FAILED", str(e))
+                    self._on_log(f"⚠️ 封存檔安全驗證失敗 [{os.path.basename(zp)}]: {e}", "warning")
+
+            if total_valid_members == 0:
+                state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
+                self._on_log("❌ 所有 ZIP 封存檔驗證均告失敗或內部無有效成員！盤點中止。", "error")
+                with self._queue_lock:
+                    self._process_finished_msg = "Takeout 盤點失敗：所有封存檔無有效成員。"
+                self._on_status("paused")
+                return
 
             indexer = takeout_index.TakeoutIndexer(state_mgr)
             report = indexer.build_cross_zip_index(job_id)
+
+            state_mgr.update_job_status(job_id, import_state.TakeoutState.COMPLETED)
 
             self._on_log("=" * 60, "info")
             self._on_log(f"📊 【ZIP 快速盤點報告】 (Job ID: {job_id})", "info")
@@ -2258,6 +2285,7 @@ class WebBridge:
             self._on_status("paused")
 
         except Exception as e:
+            state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
             self._on_log(f"❌ Takeout 盤點失敗: {e}", "error")
             self._on_status("paused")
 

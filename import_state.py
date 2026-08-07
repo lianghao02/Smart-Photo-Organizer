@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組
-管理 takeout_import.db 資料庫，提供符合 ACID 的狀態推進與復原機制。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v1.1 高效能批次與約束版)
+管理 takeout_import.db 資料庫，提供符合 ACID 的批次狀態推進與復原機制。
 """
 
 import os
@@ -75,6 +75,8 @@ class TakeoutStateManager:
                 archive_size INTEGER NOT NULL,
                 archive_mtime REAL NOT NULL,
                 fingerprint TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'RUNNING',
+                error_msg TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (job_id) REFERENCES jobs(job_id)
             );
@@ -106,6 +108,7 @@ class TakeoutStateManager:
                 final_destination TEXT,
                 error_msg TEXT,
                 updated_at TEXT NOT NULL,
+                UNIQUE(archive_id, member_index),
                 FOREIGN KEY (job_id) REFERENCES jobs(job_id),
                 FOREIGN KEY (archive_id) REFERENCES archives(archive_id)
             );
@@ -119,6 +122,7 @@ class TakeoutStateManager:
                 media_member_id INTEGER NOT NULL,
                 json_member_id INTEGER NOT NULL,
                 match_quality TEXT NOT NULL,
+                UNIQUE(job_id, media_member_id, json_member_id),
                 FOREIGN KEY (job_id) REFERENCES jobs(job_id),
                 FOREIGN KEY (media_member_id) REFERENCES members(member_id),
                 FOREIGN KEY (json_member_id) REFERENCES members(member_id)
@@ -141,43 +145,75 @@ class TakeoutStateManager:
             )
         return job_id
 
+    def update_job_status(self, job_id: str, status: str):
+        now = datetime.datetime.now().isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?",
+                (status, now, job_id)
+            )
+
     def record_archive(self, job_id: str, archive_path: str, archive_size: int, archive_mtime: float, fingerprint: str) -> int:
         now = datetime.datetime.now().isoformat()
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO archives (job_id, archive_path, archive_size, archive_mtime, fingerprint, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (job_id, archive_path, archive_size, archive_mtime, fingerprint, now)
+                "INSERT INTO archives (job_id, archive_path, archive_size, archive_mtime, fingerprint, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (job_id, archive_path, archive_size, archive_mtime, fingerprint, "RUNNING", now)
             )
             return cursor.lastrowid
 
-    def register_member(self, member_data: Dict[str, Any]) -> int:
-        now = datetime.datetime.now().isoformat()
+    def update_archive_status(self, archive_id: int, status: str, error_msg: Optional[str] = None):
         with self._get_conn() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-            INSERT INTO members (
+            conn.execute(
+                "UPDATE archives SET status = ?, error_msg = ? WHERE archive_id = ?",
+                (status, error_msg, archive_id)
+            )
+
+    def register_members_batch(self, members_data: List[Dict[str, Any]]):
+        """高效能批次插入成員，單一交易 Commit 避免硬碟頻繁 IO"""
+        if not members_data:
+            return
+        now = datetime.datetime.now().isoformat()
+        rows = [
+            (
+                m['job_id'],
+                m['archive_id'],
+                m['archive_fingerprint'],
+                m['member_index'],
+                m['member_name'],
+                m['normalized_path'],
+                m['filename'],
+                m['member_crc'],
+                m['uncompressed_size'],
+                m['compressed_size'],
+                1 if m.get('is_media') else 0,
+                1 if m.get('is_json') else 0,
+                m.get('status', TakeoutState.DISCOVERED),
+                m.get('reject_reason'),
+                now
+            )
+            for m in members_data
+        ]
+        with self._get_conn() as conn:
+            conn.executemany("""
+            INSERT OR REPLACE INTO members (
                 job_id, archive_id, archive_fingerprint, member_index, member_name,
                 normalized_path, filename, member_crc, uncompressed_size, compressed_size,
-                is_media, is_json, status, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                member_data['job_id'],
-                member_data['archive_id'],
-                member_data['archive_fingerprint'],
-                member_data['member_index'],
-                member_data['member_name'],
-                member_data['normalized_path'],
-                member_data['filename'],
-                member_data['member_crc'],
-                member_data['uncompressed_size'],
-                member_data['compressed_size'],
-                1 if member_data.get('is_media') else 0,
-                1 if member_data.get('is_json') else 0,
-                member_data.get('status', TakeoutState.DISCOVERED),
-                now
-            ))
-            return cursor.lastrowid
+                is_media, is_json, status, error_msg, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, rows)
+
+    def register_member(self, member_data: Dict[str, Any]) -> int:
+        self.register_members_batch([member_data])
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT member_id FROM members WHERE archive_id = ? AND member_index = ?",
+                (member_data['archive_id'], member_data['member_index'])
+            )
+            row = cursor.fetchone()
+            return row['member_id'] if row else 0
 
     def update_member_status(self, member_id: int, status: str, **kwargs):
         now = datetime.datetime.now().isoformat()
