@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v3.0 Phase 3 單向狀態推進與 Phase 3 支援版)
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模组 (v3.1 排除預覽單向狀態保護版)
 提供符合 ACID 的批次狀態推進、單向狀態保護 (Prevent Status Downgrade)、job_type 隔離之續傳檢索與崩潰恢復機制。
 """
 
@@ -318,7 +318,7 @@ class TakeoutStateManager:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(archive_id, member_index) DO UPDATE SET
                 status = CASE
-                    WHEN members.status IN ('VERIFIED', 'METADATA_PARSED', 'DESTINATION_RESERVED', 'COMPLETED', 'DUPLICATE_SKIPPED')
+                    WHEN members.status IN ('VERIFIED', 'METADATA_PARSED', 'DESTINATION_RESERVED', 'COMPLETED', 'DUPLICATE_SKIPPED', 'PREVIEW_ANALYZED')
                     THEN members.status
                     ELSE excluded.status
                 END,
@@ -438,14 +438,19 @@ class TakeoutStateManager:
     def recover_and_get_pending_members(self, job_id: str) -> List[Dict[str, Any]]:
         """
         Phase 2/Phase 3 崩潰恢復與續傳引擎 (Crash Recovery Engine - 帶單向保護與邊界防禦)
+        已排除 COMPLETED, PREVIEW_ANALYZED, SECURITY_REJECTED, DUPLICATE_SKIPPED, RECOVERY_CONFLICT, CANCELLED
         """
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM members WHERE job_id = ? AND is_media = 1 AND status NOT IN (?, ?, ?, ?, ?)",
+                """
+                SELECT * FROM members 
+                WHERE job_id = ? AND is_media = 1 AND status NOT IN (?, ?, ?, ?, ?, ?)
+                """,
                 (
                     job_id,
                     TakeoutState.COMPLETED,
+                    TakeoutState.PREVIEW_ANALYZED,
                     TakeoutState.SECURITY_REJECTED,
                     TakeoutState.DUPLICATE_SKIPPED,
                     TakeoutState.RECOVERY_CONFLICT,

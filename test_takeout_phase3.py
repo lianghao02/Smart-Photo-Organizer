@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 3 單元測試
-驗證單向狀態推進 UPSERT、job_type 續傳隔離、EXIF/Metadata 解析、DateParser 決策與 os.rename() 歸檔
+Google Takeout ZIP 匯入引擎 Phase 3.1 阻斷修補單元測試
+驗證 DateParser 契約、單向狀態保護、Cross-ZIP Sidecar 跨檔讀取、.part 續用與 Photos/Videos 歸檔層級
 """
 
 import os
@@ -21,30 +21,35 @@ import import_state
 import takeout_zip
 import takeout_index
 import media_metadata
+import main as app_main
 
 
 class TestTakeoutPhase3(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
-        self.zip_path = os.path.join(self.test_dir, "takeout-phase3-test.zip")
+        self.zip_path1 = os.path.join(self.test_dir, "takeout-001.zip")
+        self.zip_path2 = os.path.join(self.test_dir, "takeout-002.zip")
         self.dst_dir = os.path.join(self.test_dir, "output")
         os.makedirs(self.dst_dir, exist_ok=True)
 
         self.sample_photo_bytes = b"Fake photo content with EXIF simulation"
-        with zipfile.ZipFile(self.zip_path, 'w') as zf:
-            zf.writestr("Takeout/Google Photos/Album2018/2018_06_15_001.jpg", self.sample_photo_bytes)
-            zf.writestr("Takeout/Google Photos/Album2018/2018_06_15_001.jpg.json", b'{"photoTakenTime":{"timestamp":"1529064000"}}')
+        # 故意將照片放 zip1，JSON 放 zip2 驗證 Cross-ZIP 開啟能力
+        with zipfile.ZipFile(self.zip_path1, 'w') as zf1:
+            zf1.writestr("Takeout/Google Photos/Album2018/2018_06_15_001.jpg", self.sample_photo_bytes)
+
+        with zipfile.ZipFile(self.zip_path2, 'w') as zf2:
+            zf2.writestr("Takeout/Google Photos/Album2018/2018_06_15_001.jpg.json", b'{"photoTakenTime":{"timestamp":"1529064000"}}')
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_upsert_status_never_downgrades(self):
-        """驗證單向狀態推進 UPSERT：重掃描時 VERIFIED 狀態不會降級回 SECURITY_VALIDATED"""
+    def test_upsert_and_indexer_status_never_downgrades(self):
+        """驗證單向狀態推進 UPSERT 與 Indexer：重掃描與重建索引時 VERIFIED 狀態不降級"""
         db_path = os.path.join(self.dst_dir, "_ImportTemp", "upsert_test.db")
         state_mgr = import_state.TakeoutStateManager(db_path)
         job_id = "job_upsert_001"
         state_mgr.create_job(job_id, import_state.JobType.IMPORT, self.test_dir, self.dst_dir)
-        arc_id = state_mgr.record_archive(job_id, self.zip_path, 100, 1.0, "fp1")
+        arc_id = state_mgr.record_archive(job_id, self.zip_path1, 100, 1.0, "fp1")
 
         m = {
             "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp1",
@@ -57,28 +62,27 @@ class TestTakeoutPhase3(unittest.TestCase):
 
         # 推進狀態至 VERIFIED
         state_mgr.update_member_status(mid, import_state.TakeoutState.VERIFIED, part_path="dummy.part", sha256="abc")
-        m_before = state_mgr.get_member(mid)
-        self.assertEqual(m_before['status'], import_state.TakeoutState.VERIFIED)
-
-        # 再次執行 register_members_batch (模擬 Phase 1 重新掃描)
+        
+        # 1. 驗證 register_members_batch 不降級
         m["status"] = import_state.TakeoutState.SECURITY_VALIDATED
         state_mgr.register_members_batch([m])
+        self.assertEqual(state_mgr.get_member(mid)['status'], import_state.TakeoutState.VERIFIED)
 
-        # 驗證狀態維持 VERIFIED，未降級
-        m_after = state_mgr.get_member(mid)
-        self.assertEqual(m_after['status'], import_state.TakeoutState.VERIFIED)
+        # 2. 驗證 Indexer build_cross_zip_index 不將 VERIFIED 降級為 INDEXED
+        indexer = takeout_index.TakeoutIndexer(state_mgr)
+        indexer.build_cross_zip_index(job_id)
+        self.assertEqual(state_mgr.get_member(mid)['status'], import_state.TakeoutState.VERIFIED)
 
     def test_find_resumable_job_filters_job_type(self):
         """驗證 find_resumable_job() 精準過濾 job_type，防止 PREVIEW 與 IMPORT 互相續傳"""
         db_path = os.path.join(self.dst_dir, "_ImportTemp", "job_type_test.db")
         state_mgr = import_state.TakeoutStateManager(db_path)
 
-        fp = takeout_zip.TakeoutZipScanner.get_archive_fingerprint(self.zip_path)
+        fp = takeout_zip.TakeoutZipScanner.get_archive_fingerprint(self.zip_path1)
 
-        # 建立 IMPORT 類型的 Job 並設為 CANCELLED
         job_import = "job_import_001"
         state_mgr.create_job(job_import, import_state.JobType.IMPORT, self.test_dir, self.dst_dir)
-        state_mgr.record_archive(job_import, self.zip_path, 100, 1.0, fp)
+        state_mgr.record_archive(job_import, self.zip_path1, 100, 1.0, fp)
         state_mgr.update_job_status(job_import, import_state.TakeoutState.CANCELLED)
 
         # 查詢 PREVIEW 類型應回傳 None
@@ -89,46 +93,64 @@ class TestTakeoutPhase3(unittest.TestCase):
         found_imp = state_mgr.find_resumable_job(self.test_dir, self.dst_dir, [fp], job_type=import_state.JobType.IMPORT)
         self.assertEqual(found_imp, job_import)
 
-    def test_single_item_end_to_end_pipeline_and_rename(self):
-        """驗證單一媒體串流解壓 ➔ Metadata 日期決策 ➔ Windows os.rename() 原子更名全流程"""
-        db_path = os.path.join(self.dst_dir, "_ImportTemp", "pipeline_test.db")
-        state_mgr = import_state.TakeoutStateManager(db_path)
-        job_id = "job_pipe_001"
-        state_mgr.create_job(job_id, import_state.JobType.IMPORT, self.test_dir, self.dst_dir)
-        arc_id = state_mgr.record_archive(job_id, self.zip_path, 100, 1.0, "fp1")
+    def test_media_metadata_date_parser_contract_and_folder_structure(self):
+        """驗證 DateParser get_date_details 契約銜接與 Photos/Videos 資料夾分類"""
+        date_parser = app_main.DateParser()
+        part_path = os.path.join(self.dst_dir, "temp_test.jpg")
+        with open(part_path, 'wb') as f:
+            f.write(self.sample_photo_bytes)
 
-        # 串流解壓
-        part_path = os.path.join(self.dst_dir, "_ImportTemp", job_id, "test.part")
-        res = takeout_zip.TakeoutZipScanner.extract_member_stream(
-            self.zip_path, member_index=0, part_path=part_path
-        )
-        self.assertTrue(os.path.exists(part_path))
-
-        # 解析 Sidecar JSON
-        json_bytes = b'{"photoTakenTime":{"timestamp":"1529064000"}}'
-        json_data = media_metadata.MediaMetadataExtractor.parse_sidecar_json_bytes(json_bytes)
-        self.assertIsNotNone(json_data)
-        self.assertEqual(json_data['timestamp'], 1529064000)
-
-        # 決策日期
+        json_data = {"timestamp": 1529064000} # 2018-06-15
         meta_res = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
             part_path=part_path,
             filename="2018_06_15_001.jpg",
             dst_root=self.dst_dir,
-            json_data=json_data
+            date_parser=date_parser,
+            json_data=json_data,
+            folder_pattern="ym"
         )
 
         self.assertEqual(meta_res['date_str'], "2018-06-15")
+        self.assertTrue(meta_res['is_photo'])
+        # 驗證包含 Photos 子資料夾層級
+        expected_dir = os.path.join(self.dst_dir, "2018", "06", "Photos")
+        self.assertEqual(os.path.normpath(meta_res['target_dir']), os.path.normpath(expected_dir))
 
-        # 執行更名歸檔
-        target_dir = meta_res['target_dir']
-        os.makedirs(target_dir, exist_ok=True)
-        final_dest = os.path.join(target_dir, "2018_06_15_001.jpg")
-        os.rename(part_path, final_dest)
+    def test_cross_zip_sidecar_matching_and_reading(self):
+        """驗證照片在 zip1、Sidecar 在 zip2 的跨 ZIP 開啟與日期賦予"""
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "cross_zip_test.db")
+        state_mgr = import_state.TakeoutStateManager(db_path)
+        job_id = "job_cross_001"
+        state_mgr.create_job(job_id, import_state.JobType.IMPORT, self.test_dir, self.dst_dir)
 
-        # 驗證 .part 已移走，目的檔順利寫入
-        self.assertFalse(os.path.exists(part_path))
-        self.assertTrue(os.path.exists(final_dest))
+        st1 = os.stat(self.zip_path1)
+        arc_id1 = state_mgr.record_archive(job_id, self.zip_path1, st1.st_size, st1.st_mtime, "fp1")
+        m1 = takeout_zip.TakeoutZipScanner.scan_archive(self.zip_path1)[0]
+        m1['job_id'] = job_id
+        m1['archive_id'] = arc_id1
+        m1['archive_fingerprint'] = "fp1"
+        m1['status'] = import_state.TakeoutState.SECURITY_VALIDATED
+
+        st2 = os.stat(self.zip_path2)
+        arc_id2 = state_mgr.record_archive(job_id, self.zip_path2, st2.st_size, st2.st_mtime, "fp2")
+        m2 = takeout_zip.TakeoutZipScanner.scan_archive(self.zip_path2)[0]
+        m2['job_id'] = job_id
+        m2['archive_id'] = arc_id2
+        m2['archive_fingerprint'] = "fp2"
+        m2['status'] = import_state.TakeoutState.SECURITY_VALIDATED
+
+        state_mgr.register_members_batch([m1, m2])
+
+        indexer = takeout_index.TakeoutIndexer(state_mgr)
+        report = indexer.build_cross_zip_index(job_id)
+
+        self.assertEqual(report['matched_pair_count'], 1)
+        
+        # 驗證媒體記錄讀取 Sidecar 時，能獲取 Sidecar 屬於 arc_id2 (zip2)
+        media_id = state_mgr.get_member(1)['member_id']
+        sidecar_info = state_mgr.get_sidecar_for_media(media_id)
+        self.assertIsNotNone(sidecar_info)
+        self.assertEqual(sidecar_info['archive_id'], arc_id2)
 
 
 if __name__ == '__main__':

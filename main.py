@@ -2303,6 +2303,9 @@ class WebBridge:
                     arc_info = state_mgr.get_archive(arc_id)
                     archive_map[arc_id] = arc_info['archive_path'] if arc_info else None
 
+            # 實體化 DateParser 供日期解析呼叫
+            date_parser = DateParser()
+
             # 命名鎖與記憶體內全域 reserved_destinations 集合 (防止 TOCTOU 檔名衝突)
             naming_lock = threading.Lock()
             reserved_destinations: Set[str] = set()
@@ -2326,65 +2329,90 @@ class WebBridge:
                     pipeline_errors += 1
                     continue
 
-                # 1. 按需單檔串流解壓 ➔ EXTRACTING ➔ VERIFIED
-                part_filename = f"{uuid.uuid4().hex}.part"
-                part_path = os.path.join(dst, "_ImportTemp", job_id, part_filename)
+                # 1. 檢查是否可重用既有相符的 .part 暫存檔（崩潰續傳處理，避免重複解壓）
+                actual_part_path = m['part_path']
+                sha256_hash = m['sha256']
+                part_reused = False
 
-                try:
-                    state_mgr.update_member_status(mid, import_state.TakeoutState.EXTRACTING, part_path=part_path)
-                    
-                    res = takeout_zip.TakeoutZipScanner.extract_member_stream(
-                        zip_path=archive_path,
-                        member_index=m['member_index'],
-                        part_path=part_path,
-                        expected_filename=m['member_name'],
-                        expected_crc=m['member_crc'],
-                        expected_size=m['uncompressed_size'],
-                        cancel_check_func=lambda: self._stop_event.is_set()
-                    )
+                if m['status'] in (import_state.TakeoutState.VERIFIED, import_state.TakeoutState.METADATA_PARSED, import_state.TakeoutState.DESTINATION_RESERVED):
+                    if actual_part_path and os.path.isfile(actual_part_path):
+                        part_reused = True
 
-                    actual_part_path = res['part_path']
-                    sha256_hash = res['sha256']
-                    state_mgr.update_member_status(
-                        mid,
-                        import_state.TakeoutState.VERIFIED,
-                        part_path=actual_part_path,
-                        sha256=sha256_hash
-                    )
-                    extracted_count += 1
+                if not part_reused:
+                    part_filename = f"{uuid.uuid4().hex}.part"
+                    part_path = os.path.join(dst, "_ImportTemp", job_id, part_filename)
 
-                    # 2. 全域 SHA-256 去重檢查
-                    dup_dest = state_mgr.find_existing_sha256_dest(sha256_hash)
-                    if dup_dest:
+                    try:
+                        state_mgr.update_member_status(mid, import_state.TakeoutState.EXTRACTING, part_path=part_path)
+                        
+                        res = takeout_zip.TakeoutZipScanner.extract_member_stream(
+                            zip_path=archive_path,
+                            member_index=m['member_index'],
+                            part_path=part_path,
+                            expected_filename=m['member_name'],
+                            expected_crc=m['member_crc'],
+                            expected_size=m['uncompressed_size'],
+                            cancel_check_func=lambda: self._stop_event.is_set()
+                        )
+
+                        actual_part_path = res['part_path']
+                        sha256_hash = res['sha256']
                         state_mgr.update_member_status(
                             mid,
-                            import_state.TakeoutState.DUPLICATE_SKIPPED,
-                            final_destination=dup_dest
+                            import_state.TakeoutState.VERIFIED,
+                            part_path=actual_part_path,
+                            sha256=sha256_hash
                         )
-                        skipped_dup_count += 1
-                        if os.path.exists(actual_part_path):
-                            try: os.remove(actual_part_path)
-                            except OSError: pass
+                        extracted_count += 1
+                    except Exception as e:
+                        if self._stop_event.is_set():
+                            state_mgr.update_member_status(mid, import_state.TakeoutState.CANCELLED)
+                            state_mgr.update_job_status(job_id, import_state.TakeoutState.CANCELLED)
+                            self._on_log("⚠️ 使用者取消 Takeout 任務！", "warning")
+                            self._on_status("paused")
+                            return
+
+                        pipeline_errors += 1
+                        state_mgr.update_member_status(mid, import_state.TakeoutState.FAILED, error_msg=str(e))
+                        self._on_log(f"⚠️ 成員串流解壓失敗 [{m['filename']}]: {e}", "warning")
                         continue
 
-                    # 3. 讀取 Sidecar JSON 數據
-                    sidecar_info = state_mgr.get_sidecar_for_media(mid)
-                    sidecar_json_bytes = None
-                    if sidecar_info and archive_path:
+                # 2. 全域 SHA-256 去重檢查
+                dup_dest = state_mgr.find_existing_sha256_dest(sha256_hash)
+                if dup_dest:
+                    state_mgr.update_member_status(
+                        mid,
+                        import_state.TakeoutState.DUPLICATE_SKIPPED,
+                        final_destination=dup_dest
+                    )
+                    skipped_dup_count += 1
+                    if os.path.exists(actual_part_path):
+                        try: os.remove(actual_part_path)
+                        except OSError: pass
+                    continue
+
+                # 3. 讀取 Sidecar JSON 數據 (修正 Cross-ZIP：依 Sidecar 自己的 archive_id 開啟)
+                sidecar_info = state_mgr.get_sidecar_for_media(mid)
+                sidecar_json_bytes = None
+                if sidecar_info:
+                    json_arc_path = archive_map.get(sidecar_info['archive_id'])
+                    if json_arc_path and os.path.exists(json_arc_path):
                         try:
-                            with zipfile.ZipFile(archive_path, 'r') as zf:
-                                info_j = zf.infolist()[sidecar_info['member_index']]
-                                sidecar_json_bytes = zf.read(info_j)
+                            with zipfile.ZipFile(json_arc_path, 'r') as zf_json:
+                                info_j = zf_json.infolist()[sidecar_info['member_index']]
+                                sidecar_json_bytes = zf_json.read(info_j)
                         except Exception:
                             pass
 
-                    json_data = media_metadata.MediaMetadataExtractor.parse_sidecar_json_bytes(sidecar_json_bytes)
+                json_data = media_metadata.MediaMetadataExtractor.parse_sidecar_json_bytes(sidecar_json_bytes)
 
-                    # 4. 從 .part 解析 EXIF/ffprobe ➔ METADATA_PARSED
+                # 4. 從 .part 解析 EXIF/ffprobe ➔ METADATA_PARSED
+                try:
                     meta_res = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
                         part_path=actual_part_path,
                         filename=m['filename'],
                         dst_root=dst,
+                        date_parser=date_parser,
                         json_data=json_data,
                         folder_pattern=getattr(self._app_config, 'folder_pattern', 'ym'),
                         rename_mode=getattr(self._app_config, 'rename_mode', 'date_seq')
@@ -2439,7 +2467,6 @@ class WebBridge:
                             rename_success = True
                             break
                         except FileExistsError:
-                            # 發生檔案碰撞，產生新的候選流水號重新更名
                             with naming_lock:
                                 counter += 1
                                 candidate_name = f"{base_name}_{counter:03d}{orig_ext}"
@@ -2452,13 +2479,13 @@ class WebBridge:
                     if not rename_success:
                         raise OSError(f"os.rename 重試失敗: {final_dest}")
 
-                    # 8. Sidecar JSON 檔同步跟隨寫入 (若開啟 Sidecar 功能)
+                    # 8. Sidecar JSON 檔排他跟隨寫入 (xb 模式防止無效覆寫)
                     if sidecar_json_bytes and getattr(self._app_config, 'sidecar_enabled', True):
                         json_dest = final_dest + ".json"
                         try:
-                            with open(json_dest, 'wb') as jf:
+                            with open(json_dest, 'xb') as jf:
                                 jf.write(sidecar_json_bytes)
-                        except OSError:
+                        except (FileExistsError, OSError):
                             pass
 
                     # 9. 提交 COMPLETED ➔ .part 已移走，單檔完整流水線結束！

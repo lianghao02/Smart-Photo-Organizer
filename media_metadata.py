@@ -1,16 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v3.0 Phase 3 版)
-讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，呼叫 DateParser 決策最佳年份/月份與歸檔路徑。
+Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v3.1 API 契合法版)
+讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，與 DateParser 的 get_date_details 介面無縫整合。
 """
 
 import os
 import json
 import datetime
-from typing import Optional, Dict, Any, Tuple
-
-# 引入專案日期解析器
-import main as app_main
+from typing import Optional, Dict, Any
 
 
 class MediaMetadataExtractor:
@@ -21,7 +18,6 @@ class MediaMetadataExtractor:
             return None
         try:
             data = json.loads(json_bytes.decode('utf-8', errors='ignore'))
-            # 優先讀取 photoTakenTime
             taken_time = data.get('photoTakenTime', {})
             ts = taken_time.get('timestamp')
             if ts:
@@ -41,56 +37,63 @@ class MediaMetadataExtractor:
         part_path: str,
         filename: str,
         dst_root: str,
+        date_parser: Any,
         json_data: Optional[dict] = None,
         folder_pattern: str = "ym",
         rename_mode: str = "date_seq"
     ) -> Dict[str, Any]:
         """
-        針對 .part 暫存檔解析 EXIF/ffprobe Metadata，整合 Sidecar JSON 呼叫 DateParser 進行 8 階層日期決策
-        回傳最佳日期候選、置信度與目標資料夾/檔案候選名稱
+        針對 .part 暫存檔解析 EXIF/ffprobe Metadata，整合 Sidecar JSON 呼叫 DateParser.get_date_details() 進行日期決策
+        回傳最佳日期候選、置信度與與 Processor 一致的年/月/Photos|Videos 目標資料夾路徑。
         """
-        # 使用專案標準 DateParser
-        dp = app_main.DateParser()
-        
-        # 1. 如果有 Sidecar JSON 數據，將 Unix timestamp 轉為 ISO 字串供 DateParser 使用
-        google_json_date = None
+        orig_ext = os.path.splitext(filename)[1].lower()
+        is_photo = orig_ext in (
+            '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.raw', '.arw', '.cr2', '.nef'
+        )
+        sub_type_folder = "Photos" if is_photo else "Videos"
+
+        # 呼叫專案核心 DateParser 的 get_date_details 方法
+        details = date_parser.get_date_details(part_path, is_photo=is_photo)
+        parsed_dt = details.get("date")
+        confidence = details.get("confidence", 0)
+        source_tag = details.get("source", "未知")
+
+        # 若有 Sidecar JSON 時間且其可信度較高或作為參考
         if json_data and 'timestamp' in json_data:
             try:
-                dt = datetime.datetime.fromtimestamp(json_data['timestamp'], datetime.timezone.utc)
-                google_json_date = dt.strftime('%Y-%m-%d %H:%M:%S')
+                json_dt = datetime.datetime.fromtimestamp(json_data['timestamp'], datetime.timezone.utc)
+                # 當現有 EXIF 無日期或可信度低於 Google Takeout JSON (75 分) 時採納
+                if not parsed_dt or confidence < 75:
+                    parsed_dt = json_dt.replace(tzinfo=None)
+                    source_tag = "Google Takeout JSON"
+                    confidence = 75
             except Exception:
                 pass
-
-        # 2. 解析 .part 實體檔之 EXIF 與多媒體日期
-        file_date_info = dp.get_file_dates(part_path, google_json_date=google_json_date)
-
-        # 3. 執行 8 階層日期決策
-        parsed_dt, source_tag, confidence = dp.parse_date_with_confidence(filename, file_date_info)
 
         if parsed_dt:
             date_str = parsed_dt.strftime('%Y-%m-%d')
             year_str = parsed_dt.strftime('%Y')
-            month_str = parsed_dt.strftime('%Y-%m')
+            month_str = parsed_dt.strftime('%m')
         else:
             date_str = None
             year_str = "No_Date"
             month_str = "No_Date"
 
-        # 4. 根據 folder_pattern 計算目標歸檔資料夾路徑
-        if folder_pattern == "y":
-            target_subfolder = os.path.join(dst_root, year_str)
+        # 根據 folder_pattern 計算與主 Processor 一致的標頭資料夾結構 (年/月/Photos|Videos)
+        if year_str == "No_Date":
+            target_subfolder = os.path.join(dst_root, "No_Date", sub_type_folder)
+        elif folder_pattern == "y":
+            target_subfolder = os.path.join(dst_root, year_str, sub_type_folder)
         elif folder_pattern == "ym":
-            target_subfolder = os.path.join(dst_root, year_str, month_str)
+            target_subfolder = os.path.join(dst_root, year_str, month_str, sub_type_folder)
         else:
-            target_subfolder = os.path.join(dst_root, year_str, month_str)
-
-        if not parsed_dt:
-            target_subfolder = os.path.join(dst_root, "No_Date")
+            target_subfolder = os.path.join(dst_root, year_str, month_str, sub_type_folder)
 
         return {
             "date_str": date_str,
             "date_source": source_tag,
             "confidence": confidence,
             "target_dir": target_subfolder,
-            "parsed_dt": parsed_dt
+            "parsed_dt": parsed_dt,
+            "is_photo": is_photo
         }

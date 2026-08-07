@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 跨 ZIP 媒體與 Sidecar JSON 索引配對模組 (v1.3 修補版)
-修復 Tuple 匯入缺失、截斷 supplemental metadata、全型/裸 stem 檢索、JSON 獨佔指派與批次更新。
+Google Takeout ZIP 匯入引擎 - 跨 ZIP 媒體與 Sidecar JSON 索引配對模組 (v3.1 單向狀態保護版)
+修復 Tuple 匯入缺失、截斷 supplemental metadata、全型/裸 stem 檢索、JSON 獨佔指派與保護既有 VERIFIED 狀態。
 """
 
 import os
 import re
 from typing import List, Dict, Any, Set, Tuple, Optional
-from import_state import TakeoutStateManager
+from import_state import TakeoutStateManager, TakeoutState
 
 
 class TakeoutIndexer:
@@ -94,7 +94,7 @@ class TakeoutIndexer:
             matched_json = None
             match_quality = "NONE"
 
-            # 1. 優先匹配：直接在 json_by_stem_path 中尋找 norm_p (例如包含了 .heic 等完整副檔名的裸 stem)
+            # 1. 優先匹配：直接在 json_by_stem_path 中尋找 norm_p
             if norm_p in json_by_stem_path:
                 cand = json_by_stem_path[norm_p]
                 if cand['member_id'] not in assigned_json_ids:
@@ -146,7 +146,9 @@ class TakeoutIndexer:
             else:
                 unmatched_media_count += 1
 
-            indexed_media_ids.append(media['member_id'])
+            # 僅針對處於 SECURITY_VALIDATED 或 DISCOVERED 狀態的媒體更新為 INDEXED (保護已 VERIFIED / COMPLETED 狀態)
+            if media['status'] in (TakeoutState.SECURITY_VALIDATED, TakeoutState.DISCOVERED):
+                indexed_media_ids.append(media['member_id'])
 
         # 批次寫入 sidecar_links
         if sidecar_rows:
@@ -156,8 +158,9 @@ class TakeoutIndexer:
                     sidecar_rows
                 )
 
-        # 高效能批次更新媒體狀態為 INDEXED
-        self.state_mgr.update_members_status_batch(indexed_media_ids, "INDEXED")
+        # 高效能批次更新媒體狀態為 INDEXED (單向狀態保護)
+        if indexed_media_ids:
+            self.state_mgr.update_members_status_batch(indexed_media_ids, TakeoutState.INDEXED)
 
         audit_report = {
             "job_id": job_id,
