@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 1.2 阻斷修補與相容性測試
+Google Takeout ZIP 匯入引擎 Phase 1.3 阻斷修補與相容性測試
 驗證 Schema 遷移 (Migration)、截斷 supplemental metadata、JSON 獨佔指派與 DB UPSERT。
 """
 
@@ -25,7 +25,7 @@ class TestTakeoutPhase1(unittest.TestCase):
         self.dst_dir = os.path.join(self.test_dir, "output")
         os.makedirs(self.dst_dir, exist_ok=True)
 
-        # 建立測試 ZIP 檔 (含 supplemental-metadata.json 與 PNG stem 配對)
+        # 建立測試 ZIP 檔 (含 截斷 supplemental-metadata.json 與 PNG stem 配對)
         with zipfile.ZipFile(self.zip_path, 'w') as zf:
             # 1. 正常全名配對
             zf.writestr("Takeout/Google Photos/Album2015/2015_05_12_001.jpg", b"fake photo bytes")
@@ -42,13 +42,24 @@ class TestTakeoutPhase1(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_db_migration_from_old_schema(self):
-        """驗證舊版 Phase 1 SQLite 資料庫開啟時能自動無縫進行 Schema Migration"""
-        db_path = os.path.join(self.dst_dir, "_ImportTemp", "old_takeout.db")
+    def test_db_migration_from_full_old_schema(self):
+        """驗證完整 Phase 1 舊版三張資料表開啟時，自動遷移與 UNIQUE 索引及 UPSERT 均正常升級"""
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "full_old_takeout.db")
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-        # 手動建立缺少 status / error_msg 欄位的舊版 archives 資料表
+        # 建立完整舊版 Phase 1 三張資料表 (缺少 status/error_msg 與 UNIQUE 約束)
         conn = sqlite3.connect(db_path)
+        conn.execute("""
+        CREATE TABLE jobs (
+            job_id TEXT PRIMARY KEY,
+            job_type TEXT NOT NULL,
+            src_dir TEXT NOT NULL,
+            dst_dir TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            status TEXT NOT NULL
+        );
+        """)
         conn.execute("""
         CREATE TABLE archives (
             archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,10 +71,46 @@ class TestTakeoutPhase1(unittest.TestCase):
             created_at TEXT NOT NULL
         );
         """)
+        conn.execute("""
+        CREATE TABLE members (
+            member_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            archive_id INTEGER NOT NULL,
+            archive_fingerprint TEXT NOT NULL,
+            member_index INTEGER NOT NULL,
+            member_name TEXT NOT NULL,
+            normalized_path TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            member_crc INTEGER NOT NULL,
+            uncompressed_size INTEGER NOT NULL,
+            compressed_size INTEGER NOT NULL,
+            is_media INTEGER NOT NULL,
+            is_json INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            part_path TEXT,
+            sha256 TEXT,
+            date_candidate TEXT,
+            date_source TEXT,
+            date_confidence INTEGER,
+            dest_reserved TEXT,
+            final_destination TEXT,
+            error_msg TEXT,
+            updated_at TEXT NOT NULL
+        );
+        """)
+        conn.execute("""
+        CREATE TABLE sidecar_links (
+            link_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            media_member_id INTEGER NOT NULL,
+            json_member_id INTEGER NOT NULL,
+            match_quality TEXT NOT NULL
+        );
+        """)
         conn.commit()
         conn.close()
 
-        # 使用 TakeoutStateManager 開啟該舊資料庫，驗證 Migration 是否自動成功
+        # 使用 TakeoutStateManager 開啟該舊資料庫，驗證 Migration 是否成功
         state_mgr = import_state.TakeoutStateManager(db_path)
         with state_mgr._get_conn() as c:
             cursor = c.cursor()
@@ -71,6 +118,22 @@ class TestTakeoutPhase1(unittest.TestCase):
             cols = {r['name'] for r in cursor.fetchall()}
             self.assertIn("status", cols)
             self.assertIn("error_msg", cols)
+
+        # 測試在遷移後的資料庫中執行 UPSERT 註冊
+        m_item = {
+            "job_id": "j1", "archive_id": 1, "archive_fingerprint": "fp1",
+            "member_index": 0, "member_name": "test.jpg", "normalized_path": "test.jpg",
+            "filename": "test.jpg", "member_crc": 123, "uncompressed_size": 100,
+            "compressed_size": 80, "is_media": True, "is_json": False, "status": "VALIDATED"
+        }
+        state_mgr.register_members_batch([m_item])
+        # 重複插入同一個 (archive_id, member_index)
+        m_item["status"] = "UPDATED"
+        state_mgr.register_members_batch([m_item])
+        
+        m_res = state_mgr.get_member(1)
+        self.assertIsNotNone(m_res)
+        self.assertEqual(m_res['status'], "UPDATED")
 
     def test_zip_security_validation(self):
         # 測試路徑穿越檢查
@@ -119,7 +182,6 @@ class TestTakeoutPhase1(unittest.TestCase):
             m['archive_fingerprint'] = fingerprint
             m['status'] = import_state.TakeoutState.SECURITY_VALIDATED
 
-        # 測試 SQLite 高效能批次與安全 UPSERT
         state_mgr.register_members_batch(members)
 
         # 建立索引與配對

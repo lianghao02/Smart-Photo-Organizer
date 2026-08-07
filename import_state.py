@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v1.2 遷移與安全 UPSERT 版)
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v1.3 遷移與 UPSERT 修補版)
 提供符合 ACID 的批次狀態推進、Schema 自動遷移 (Migration) 與復原機制。
 """
 
@@ -39,6 +39,8 @@ class JobType:
 
 
 class TakeoutStateManager:
+    CURRENT_SCHEMA_VERSION = 2
+
     def __init__(self, db_path: str):
         self.db_path = db_path
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
@@ -115,7 +117,7 @@ class TakeoutStateManager:
             );
             """)
 
-            # Sidecar 配對表 (新增 UNIQUE 防止 JSON 重複指派)
+            # Sidecar 配對表
             conn.execute("""
             CREATE TABLE IF NOT EXISTS sidecar_links (
                 link_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,7 +132,11 @@ class TakeoutStateManager:
             );
             """)
 
-            # 索引建立
+            # 唯一索引 (保障 UPSERT 專用)
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_members_archive_member ON members(archive_id, member_index);")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sidecar_unique ON sidecar_links(job_id, json_member_id);")
+
+            # 常用查詢索引
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_normalized_path ON members(normalized_path);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_crc_size ON members(member_crc, uncompressed_size);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_filename ON members(filename);")
@@ -140,14 +146,22 @@ class TakeoutStateManager:
     def _migrate_db(self):
         """自動 Schema 遷移 (相容舊版 Phase 1 開啟的資料庫)"""
         with self._get_conn() as conn:
-            # 檢查 archives 欄位
             cursor = conn.cursor()
+            
+            # 1. 檢查 archives 欄位
             cursor.execute("PRAGMA table_info(archives);")
             arc_cols = {row['name'] for row in cursor.fetchall()}
             if 'status' not in arc_cols:
                 conn.execute("ALTER TABLE archives ADD COLUMN status TEXT NOT NULL DEFAULT 'RUNNING';")
             if 'error_msg' not in arc_cols:
                 conn.execute("ALTER TABLE archives ADD COLUMN error_msg TEXT;")
+
+            # 2. 建立唯一索引以支援 ON CONFLICT (archive_id, member_index) 語法
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_members_archive_member ON members(archive_id, member_index);")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sidecar_unique ON sidecar_links(job_id, json_member_id);")
+
+            # 3. 更新 user_version
+            conn.execute(f"PRAGMA user_version = {self.CURRENT_SCHEMA_VERSION};")
 
     def create_job(self, job_id: str, job_type: str, src_dir: str, dst_dir: str) -> str:
         now = datetime.datetime.now().isoformat()

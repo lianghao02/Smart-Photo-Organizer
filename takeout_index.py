@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 跨 ZIP 媒體與 Sidecar JSON 索引配對模組 (v1.2 全面修補版)
-修復 Tuple 匯入缺失、截斷 supplemental metadata、JSON 重複指派與批次更新。
+Google Takeout ZIP 匯入引擎 - 跨 ZIP 媒體與 Sidecar JSON 索引配對模組 (v1.3 修補版)
+修復 Tuple 匯入缺失、截斷 supplemental metadata、全型/裸 stem 檢索、JSON 獨佔指派與批次更新。
 """
 
 import os
@@ -21,7 +21,6 @@ class TakeoutIndexer:
         支援 .json 以及截斷的 .supplemental-metadata.json 變體 (例如 .supplemental-metada.json)
         """
         lower_p = norm_p.lower()
-        # 匹配 .supplemental...json 後綴變體
         m = re.search(r'\.supplemental[^/]*\.json$', lower_p)
         if m:
             stem = norm_p[:m.start()]
@@ -65,9 +64,11 @@ class TakeoutIndexer:
 
                 stem, fn_stem = self._extract_json_stem(norm_p)
                 stem_lower = stem.lower()
+
+                # 1. 完整相對路徑 stem (例如 takeout/album/img_002.heic)
                 json_by_stem_path[stem_lower] = m
 
-                # 去除媒體副檔名後的 base stem
+                # 2. 裸 stem (例如 takeout/album/img_002)
                 media_base_stem = os.path.splitext(stem_lower)[0]
                 json_by_stem_path[media_base_stem] = m
 
@@ -93,38 +94,45 @@ class TakeoutIndexer:
             matched_json = None
             match_quality = "NONE"
 
-            # 準備可配對的候選 JSON key 列表
-            candidates = [
-                (norm_p + ".json", "EXACT_FULL_PATH"),
-                (norm_p + ".supplemental-metadata.json", "EXACT_FULL_PATH_SUPPLEMENTAL"),
-                (media_stem + ".json", "BASE_STEM"),
-                (media_stem + ".supplemental-metadata.json", "BASE_STEM_SUPPLEMENTAL"),
-            ]
+            # 1. 優先匹配：直接在 json_by_stem_path 中尋找 norm_p (例如包含了 .heic 等完整副檔名的裸 stem)
+            if norm_p in json_by_stem_path:
+                cand = json_by_stem_path[norm_p]
+                if cand['member_id'] not in assigned_json_ids:
+                    matched_json = cand
+                    match_quality = "EXACT_MEDIA_FULL_PATH"
 
-            # 1. 優先嘗試全名與 Stem 匹配
-            for key, qual in candidates:
-                if key in json_by_full_path:
-                    cand = json_by_full_path[key]
-                    if cand['member_id'] not in assigned_json_ids:
-                        matched_json = cand
-                        match_quality = qual
-                        break
-                elif key in json_by_stem_path:
-                    cand = json_by_stem_path[key]
-                    if cand['member_id'] not in assigned_json_ids:
-                        matched_json = cand
-                        match_quality = qual
-                        break
+            # 2. 其次嘗試拼接 .json 與 .supplemental 檔名
+            if not matched_json:
+                candidates = [
+                    (norm_p + ".json", "EXACT_FULL_PATH"),
+                    (norm_p + ".supplemental-metadata.json", "EXACT_FULL_PATH_SUPPLEMENTAL"),
+                    (media_stem + ".json", "BASE_STEM"),
+                    (media_stem + ".supplemental-metadata.json", "BASE_STEM_SUPPLEMENTAL"),
+                ]
 
-            # 2. 其次嘗試檔名匹配 (跨資料夾/跨 ZIP)
+                for key, qual in candidates:
+                    if key in json_by_full_path:
+                        cand = json_by_full_path[key]
+                        if cand['member_id'] not in assigned_json_ids:
+                            matched_json = cand
+                            match_quality = qual
+                            break
+                    elif key in json_by_stem_path:
+                        cand = json_by_stem_path[key]
+                        if cand['member_id'] not in assigned_json_ids:
+                            matched_json = cand
+                            match_quality = qual
+                            break
+
+            # 3. 最後嘗試檔名匹配 (跨資料夾/跨 ZIP)
             if not matched_json:
                 fn_cands = [
                     (media['filename'] + ".json").lower(),
                     (media['filename'] + ".supplemental-metadata.json").lower(),
+                    (os.path.basename(media_stem) + ".json").lower(),
                 ]
                 for fn_key in fn_cands:
                     if fn_key in json_by_filename:
-                        # 篩選尚未被指派的 JSON 候選
                         unassigned = [j for j in json_by_filename[fn_key] if j['member_id'] not in assigned_json_ids]
                         if len(unassigned) == 1:
                             matched_json = unassigned[0]

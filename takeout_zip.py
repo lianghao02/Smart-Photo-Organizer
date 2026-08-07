@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - ZIP 掃描、ZipInfo 唯讀讀取與資訊安全防護模組 (v1.2 全面修補版)
+Google Takeout ZIP 匯入引擎 - ZIP 掃描、ZipInfo 唯讀讀取與資訊安全防護模組 (v1.3 P0 終極修補版)
 """
 
 import os
@@ -120,7 +120,7 @@ class TakeoutZipScanner:
                     "compressed_size": info.compress_size,
                     "is_safe": is_safe,
                     "reject_reason": reason,
-                    "is_json": ext == '.json' or filename.lower().endswith('.supplemental-metadata.json'),
+                    "is_json": ext == '.json',
                     "is_media": ext in (
                         '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.raw', '.arw', '.cr2', '.nef',
                         '.mp4', '.mov', '.avi', '.mkv', '.wmv', '.m4v', '.3gp'
