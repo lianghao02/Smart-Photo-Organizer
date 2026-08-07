@@ -424,8 +424,19 @@
   <div class="card">
     <div class="card-title">⚙️ 整理模式與規則</div>
 
+    <!-- Main Work Type (General vs Takeout ZIP) -->
+    <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; display: flex; align-items: center; gap: 20px;">
+      <span style="font-weight: 600; color: var(--accent-color); font-size: 0.9rem;">任務類型：</span>
+      <label class="radio-label" style="font-weight: 600;">
+        <input type="radio" name="work_type" value="general" checked onchange="onWorkTypeChange()"> 📁 一般資料夾整理
+      </label>
+      <label class="radio-label" style="font-weight: 600; color: #F59E0B;">
+        <input type="radio" name="work_type" value="takeout_zip" onchange="onWorkTypeChange()"> 📦 Google Takeout ZIP 壓縮檔匯入 (本機直讀)
+      </label>
+    </div>
+
     <!-- Mode radios (Simplified to 2 Modes) -->
-    <div class="mode-container">
+    <div class="mode-container" id="modeContainer">
       <div class="tooltip-box">
         <label class="radio-label">
           <input type="radio" name="mode" value="copy" checked> 複製照片 (Copy)
@@ -627,6 +638,18 @@
     if (!isChecked) strict.checked = false;
   }
 
+  function onWorkTypeChange() {
+    const workType = document.querySelector('input[name="work_type"]:checked').value;
+    const moveRadio = document.querySelector('input[name="mode"][value="move"]');
+    const copyRadio = document.querySelector('input[name="mode"][value="copy"]');
+    if (workType === 'takeout_zip') {
+      copyRadio.checked = true;
+      moveRadio.disabled = true;
+    } else {
+      moveRadio.disabled = false;
+    }
+  }
+
   function onRenameEnabledChange() {
     const enabled = document.getElementById('renameEnabled').checked;
     const radios = document.getElementsByName('renameMode');
@@ -635,8 +658,10 @@
 
   function getConfigPayload() {
     const renameModeRadio = document.querySelector('input[name="renameMode"]:checked');
+    const workTypeRadio = document.querySelector('input[name="work_type"]:checked');
     const mode = document.querySelector('input[name="mode"]:checked').value;
     return {
+      work_type: workTypeRadio ? workTypeRadio.value : 'general',
       source_dir: document.getElementById('sourceDir').value,
       dest_dir: document.getElementById('destDir').value,
       mode: mode,

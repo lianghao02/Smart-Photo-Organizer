@@ -66,6 +66,10 @@ except ImportError:
     rg = None
     _HAS_RG = False
 
+import import_state
+import takeout_zip
+import takeout_index
+
 
 def is_onedrive_cloud_only(path: str) -> bool:
     """判斷檔案是否為 Windows 上 OneDrive 僅限線上（未下載）的預留檔案"""
@@ -2163,6 +2167,11 @@ class WebBridge:
         self._app_config.sidecar_enabled = config_dict.get('sidecar_enabled', True)
         self._app_config.save()
 
+        work_type = config_dict.get('work_type', 'general')
+        if work_type == 'takeout_zip':
+            threading.Thread(target=self._run_takeout_audit, args=(src, dst, config_dict.get('dry_run', False)), daemon=True).start()
+            return {"success": True}
+
         cfg = {
             'src_root': src,
             'dst_root': dst,
@@ -2185,6 +2194,72 @@ class WebBridge:
         self._processor = Processor(cfg, progress_callback=self._on_progress, status_callback=self._on_status)
         threading.Thread(target=self._run_processor, daemon=True).start()
         return {"success": True}
+
+    def _run_takeout_audit(self, src: str, dst: str, is_dry_run: bool):
+        try:
+            self._on_status("running")
+            self._on_log("=== 📦 啟動 Takeout ZIP 第一階段：安全防護、SQLite 與 ZIP 快速盤點 ===", "info")
+
+            db_path = os.path.join(dst, "_ImportTemp", "takeout_import.db")
+            state_mgr = import_state.TakeoutStateManager(db_path)
+            job_type = import_state.JobType.PREVIEW if is_dry_run else import_state.JobType.IMPORT
+            job_id = f"job_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            state_mgr.create_job(job_id, job_type, src, dst)
+
+            zip_files = []
+            if os.path.isfile(src) and src.lower().endswith('.zip'):
+                zip_files.append(src)
+            elif os.path.isdir(src):
+                for root, _, files in os.walk(src):
+                    for f in files:
+                        if f.lower().endswith('.zip'):
+                            zip_files.append(os.path.join(root, f))
+
+            if not zip_files:
+                self._on_log("❌ 來源路徑下未搜尋到任何 .zip 封存檔！", "error")
+                self._on_status("paused")
+                return
+
+            self._on_log(f"🔍 搜尋到 {len(zip_files)} 個 Takeout ZIP 封存檔，開啟 ZipInfo 安全檢驗與中央目錄掃描...", "info")
+
+            for zp in zip_files:
+                st = os.stat(zp)
+                fingerprint = takeout_zip.TakeoutZipScanner.get_archive_fingerprint(zp)
+                arc_id = state_mgr.record_archive(job_id, zp, st.st_size, st.st_mtime, fingerprint)
+                
+                try:
+                    members = takeout_zip.TakeoutZipScanner.scan_archive(zp)
+                    for m in members:
+                        m['job_id'] = job_id
+                        m['archive_id'] = arc_id
+                        m['archive_fingerprint'] = fingerprint
+                        m['status'] = import_state.TakeoutState.SECURITY_REJECTED if not m['is_safe'] else import_state.TakeoutState.SECURITY_VALIDATED
+                        state_mgr.register_member(m)
+                except Exception as e:
+                    self._on_log(f"⚠️ 封存檔安全驗證異常 [{os.path.basename(zp)}]: {e}", "warning")
+
+            indexer = takeout_index.TakeoutIndexer(state_mgr)
+            report = indexer.build_cross_zip_index(job_id)
+
+            self._on_log("=" * 60, "info")
+            self._on_log(f"📊 【ZIP 快速盤點報告】 (Job ID: {job_id})", "info")
+            self._on_log(f"  • 媒體檔案數：{report['media_count']:,} 個", "info")
+            self._on_log(f"  • Sidecar JSON 數：{report['json_count']:,} 個", "info")
+            self._on_log(f"  • Sidecar 精準配對數：{report['matched_pair_count']:,} 組", "info")
+            self._on_log(f"  • 宣告解壓後總容量：{report['total_uncompressed_gb']} GB", "info")
+            if report['security_rejected_count'] > 0:
+                self._on_log(f"  ⚠️ 安全攔截危險/異常成員：{report['security_rejected_count']} 個", "warning")
+            self._on_log("=" * 60, "info")
+            self._on_log("=== ✅ Phase 1 快速盤點完成！SQLite 索引與安全檢驗完全建立 ===", "info")
+
+            msg = f"Phase 1 盤點完成！\n媒體數: {report['media_count']}\nJSON 數: {report['json_count']}\n配對數: {report['matched_pair_count']}\n解壓容量: {report['total_uncompressed_gb']} GB"
+            with self._queue_lock:
+                self._process_finished_msg = msg
+            self._on_status("paused")
+
+        except Exception as e:
+            self._on_log(f"❌ Takeout 盤點失敗: {e}", "error")
+            self._on_status("paused")
 
     def _run_processor(self):
         try:
