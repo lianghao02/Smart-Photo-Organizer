@@ -18,6 +18,26 @@ Videos/
 
 # System
 .DS_Store
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Config (Local settings)
+config.json
+history_log.json
+
+# Screenshots and Duplicates
+_Screenshots/
+_Duplicates/
+_LivePhotos/
+No_Date/
+Photos/
+Videos/
+
+# System
+.DS_Store
 Thumbs.db
 
 # IDE
@@ -27,6 +47,7 @@ Thumbs.db
 # Environment
 .env
 date_audit.csv
+*.log
 .venv
 env/
 venv/

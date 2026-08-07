@@ -2197,14 +2197,15 @@ class WebBridge:
 
     def _run_takeout_audit(self, src: str, dst: str, is_dry_run: bool):
         job_id = f"job_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        db_path = os.path.join(dst, "_ImportTemp", "takeout_import.db")
-        state_mgr = import_state.TakeoutStateManager(db_path)
-        job_type = import_state.JobType.PREVIEW if is_dry_run else import_state.JobType.IMPORT
+        state_mgr = None
 
         try:
             self._on_status("running")
             self._on_log("=== 📦 啟動 Takeout ZIP 第一階段：安全防護、SQLite 與 ZIP 快速盤點 ===", "info")
 
+            db_path = os.path.join(dst, "_ImportTemp", "takeout_import.db")
+            state_mgr = import_state.TakeoutStateManager(db_path)
+            job_type = import_state.JobType.PREVIEW if is_dry_run else import_state.JobType.IMPORT
             state_mgr.create_job(job_id, job_type, src, dst)
 
             zip_files = []
@@ -2217,13 +2218,15 @@ class WebBridge:
                             zip_files.append(os.path.join(root, f))
 
             if not zip_files:
-                state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
+                if state_mgr:
+                    state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
                 self._on_log("❌ 來源路徑下未搜尋到任何 .zip 封存檔！", "error")
                 self._on_status("paused")
                 return
 
             if len(zip_files) > takeout_zip.TakeoutZipScanner.MAX_ZIP_COUNT:
-                state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
+                if state_mgr:
+                    state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
                 self._on_log(f"❌ 超過單一任務 ZIP 數量上限 ({len(zip_files)} > {takeout_zip.TakeoutZipScanner.MAX_ZIP_COUNT})！", "error")
                 self._on_status("paused")
                 return
@@ -2277,7 +2280,8 @@ class WebBridge:
             indexer = takeout_index.TakeoutIndexer(state_mgr)
             report = indexer.build_cross_zip_index(job_id)
 
-            state_mgr.update_job_status(job_id, import_state.TakeoutState.COMPLETED)
+            final_status = import_state.TakeoutState.COMPLETED_WITH_ERRORS if archive_errors > 0 else import_state.TakeoutState.COMPLETED
+            state_mgr.update_job_status(job_id, final_status)
 
             self._on_log("=" * 60, "info")
             self._on_log(f"📊 【ZIP 快速盤點報告】 (Job ID: {job_id})", "info")
@@ -2285,18 +2289,22 @@ class WebBridge:
             self._on_log(f"  • Sidecar JSON 數：{report['json_count']:,} 個", "info")
             self._on_log(f"  • Sidecar 精準配對數：{report['matched_pair_count']:,} 組", "info")
             self._on_log(f"  • 宣告解壓後總容量：{report['total_uncompressed_gb']} GB", "info")
+            if archive_errors > 0:
+                self._on_log(f"  ⚠️ 失敗/損毀的 ZIP 封存檔：{archive_errors} 個", "warning")
             if report['security_rejected_count'] > 0:
                 self._on_log(f"  ⚠️ 安全攔截危險/異常成員：{report['security_rejected_count']} 個", "warning")
             self._on_log("=" * 60, "info")
-            self._on_log("=== ✅ Phase 1 快速盤點完成！SQLite 索引與安全檢驗完全建立 ===", "info")
+            self._on_log(f"=== ✅ Phase 1 快速盤點完成！狀態: {final_status} ===", "info")
 
-            msg = f"Phase 1 盤點完成！\n媒體數: {report['media_count']}\nJSON 數: {report['json_count']}\n配對數: {report['matched_pair_count']}\n解壓容量: {report['total_uncompressed_gb']} GB"
+            msg = f"Phase 1 盤點完成 ({final_status})！\n媒體數: {report['media_count']}\nJSON 數: {report['json_count']}\n配對數: {report['matched_pair_count']}\n解壓容量: {report['total_uncompressed_gb']} GB"
             with self._queue_lock:
                 self._process_finished_msg = msg
             self._on_status("paused")
 
         except Exception as e:
-            state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
+            if state_mgr:
+                try: state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
+                except Exception: pass
             self._on_log(f"❌ Takeout 盤點失敗: {e}", "error")
             self._on_status("paused")
 

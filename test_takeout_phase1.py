@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 1.3 阻斷修補與相容性測試
-驗證 Schema 遷移 (Migration)、截斷 supplemental metadata、JSON 獨佔指派與 DB UPSERT。
+Google Takeout ZIP 匯入引擎 Phase 1.4 阻斷修補與完整性測試
+驗證 包含歷史重複列之舊 DB Migration 清理、截斷 supplemental metadata、JSON 獨佔指派與相容性。
 """
 
 import os
@@ -11,8 +11,13 @@ import sqlite3
 import tempfile
 import zipfile
 import unittest
+from pathlib import Path
 
-sys.path.insert(0, r'C:\Users\chia-hao\Documents\GitHub\Smart-Photo-Organizer')
+# 動態加載專案目錄 (免硬編碼本機絕對路徑)
+PROJECT_ROOT = str(Path(__file__).resolve().parent)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import import_state
 import takeout_zip
 import takeout_index
@@ -42,12 +47,12 @@ class TestTakeoutPhase1(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_db_migration_from_full_old_schema(self):
-        """驗證完整 Phase 1 舊版三張資料表開啟時，自動遷移與 UNIQUE 索引及 UPSERT 均正常升級"""
-        db_path = os.path.join(self.dst_dir, "_ImportTemp", "full_old_takeout.db")
+    def test_db_migration_with_existing_duplicate_rows(self):
+        """驗證包含歷史重複成員列的舊資料庫在開啟時，Migration 能夠自動清理重複列並成功創建 UNIQUE 索引"""
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "dup_old_takeout.db")
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-        # 建立完整舊版 Phase 1 三張資料表 (缺少 status/error_msg 與 UNIQUE 約束)
+        # 手動建立舊版 DB 並故意注入重複 (archive_id, member_index) 寫入
         conn = sqlite3.connect(db_path)
         conn.execute("""
         CREATE TABLE jobs (
@@ -107,28 +112,29 @@ class TestTakeoutPhase1(unittest.TestCase):
             match_quality TEXT NOT NULL
         );
         """)
+
+        # 故意注入重複成員列 (archive_id=1, member_index=0)
+        conn.execute("""
+        INSERT INTO members (job_id, archive_id, archive_fingerprint, member_index, member_name, normalized_path, filename, member_crc, uncompressed_size, compressed_size, is_media, is_json, status, updated_at)
+        VALUES ('j1', 1, 'fp1', 0, 'test.jpg', 'test.jpg', 'test.jpg', 123, 100, 80, 1, 0, 'VALIDATED', '2026-08-07');
+        """)
+        conn.execute("""
+        INSERT INTO members (job_id, archive_id, archive_fingerprint, member_index, member_name, normalized_path, filename, member_crc, uncompressed_size, compressed_size, is_media, is_json, status, updated_at)
+        VALUES ('j1', 1, 'fp1', 0, 'test.jpg', 'test.jpg', 'test.jpg', 123, 100, 80, 1, 0, 'VALIDATED', '2026-08-07');
+        """)
         conn.commit()
         conn.close()
 
-        # 使用 TakeoutStateManager 開啟該舊資料庫，驗證 Migration 是否成功
+        # 使用 TakeoutStateManager 開啟，驗證 Migration 清理重複資料與建立 UNIQUE 索引是否 100% 成功
         state_mgr = import_state.TakeoutStateManager(db_path)
-        with state_mgr._get_conn() as c:
-            cursor = c.cursor()
-            cursor.execute("PRAGMA table_info(archives);")
-            cols = {r['name'] for r in cursor.fetchall()}
-            self.assertIn("status", cols)
-            self.assertIn("error_msg", cols)
 
-        # 測試在遷移後的資料庫中執行 UPSERT 註冊
+        # 在無重複阻斷後執行 UPSERT 寫入
         m_item = {
             "job_id": "j1", "archive_id": 1, "archive_fingerprint": "fp1",
             "member_index": 0, "member_name": "test.jpg", "normalized_path": "test.jpg",
             "filename": "test.jpg", "member_crc": 123, "uncompressed_size": 100,
-            "compressed_size": 80, "is_media": True, "is_json": False, "status": "VALIDATED"
+            "compressed_size": 80, "is_media": True, "is_json": False, "status": "UPDATED"
         }
-        state_mgr.register_members_batch([m_item])
-        # 重複插入同一個 (archive_id, member_index)
-        m_item["status"] = "UPDATED"
         state_mgr.register_members_batch([m_item])
         
         m_res = state_mgr.get_member(1)

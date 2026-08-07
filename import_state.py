@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v1.3 遷移與 UPSERT 修補版)
-提供符合 ACID 的批次狀態推進、Schema 自動遷移 (Migration) 與復原機制。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v1.4 重複資料清理與 Migration 容錯版)
+提供符合 ACID 的批次狀態推進、舊 DB 重複資料清理、Schema 自動遷移與復原機制。
 """
 
 import os
@@ -20,6 +20,7 @@ class TakeoutState:
     METADATA_PARSED = "METADATA_PARSED"
     DESTINATION_RESERVED = "DESTINATION_RESERVED"
     COMPLETED = "COMPLETED"
+    COMPLETED_WITH_ERRORS = "COMPLETED_WITH_ERRORS"
 
     # 預覽狀態
     PREVIEW_ANALYZED = "PREVIEW_ANALYZED"
@@ -39,7 +40,7 @@ class JobType:
 
 
 class TakeoutStateManager:
-    CURRENT_SCHEMA_VERSION = 2
+    CURRENT_SCHEMA_VERSION = 3
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -111,7 +112,6 @@ class TakeoutStateManager:
                 final_destination TEXT,
                 error_msg TEXT,
                 updated_at TEXT NOT NULL,
-                UNIQUE(archive_id, member_index),
                 FOREIGN KEY (job_id) REFERENCES jobs(job_id),
                 FOREIGN KEY (archive_id) REFERENCES archives(archive_id)
             );
@@ -125,16 +125,11 @@ class TakeoutStateManager:
                 media_member_id INTEGER NOT NULL,
                 json_member_id INTEGER NOT NULL,
                 match_quality TEXT NOT NULL,
-                UNIQUE(job_id, json_member_id),
                 FOREIGN KEY (job_id) REFERENCES jobs(job_id),
                 FOREIGN KEY (media_member_id) REFERENCES members(member_id),
                 FOREIGN KEY (json_member_id) REFERENCES members(member_id)
             );
             """)
-
-            # 唯一索引 (保障 UPSERT 專用)
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_members_archive_member ON members(archive_id, member_index);")
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sidecar_unique ON sidecar_links(job_id, json_member_id);")
 
             # 常用查詢索引
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_normalized_path ON members(normalized_path);")
@@ -144,7 +139,7 @@ class TakeoutStateManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_archives_fingerprint ON archives(fingerprint);")
 
     def _migrate_db(self):
-        """自動 Schema 遷移 (相容舊版 Phase 1 開啟的資料庫)"""
+        """自動 Schema 遷移與舊資料庫重複資料清理 (Migration)"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             
@@ -156,11 +151,23 @@ class TakeoutStateManager:
             if 'error_msg' not in arc_cols:
                 conn.execute("ALTER TABLE archives ADD COLUMN error_msg TEXT;")
 
-            # 2. 建立唯一索引以支援 ON CONFLICT (archive_id, member_index) 語法
+            # 2. 清理 members 與 sidecar_links 中可能存在的歷史重複資料 (確保 UNIQUE 索引順利建立)
+            conn.execute("""
+            DELETE FROM members WHERE rowid NOT IN (
+                SELECT MIN(rowid) FROM members GROUP BY archive_id, member_index
+            );
+            """)
+            conn.execute("""
+            DELETE FROM sidecar_links WHERE rowid NOT IN (
+                SELECT MIN(rowid) FROM sidecar_links GROUP BY job_id, json_member_id
+            );
+            """)
+
+            # 3. 建立唯一索引以支援 ON CONFLICT (archive_id, member_index) 語法
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_members_archive_member ON members(archive_id, member_index);")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sidecar_unique ON sidecar_links(job_id, json_member_id);")
 
-            # 3. 更新 user_version
+            # 4. 更新 user_version
             conn.execute(f"PRAGMA user_version = {self.CURRENT_SCHEMA_VERSION};")
 
     def create_job(self, job_id: str, job_type: str, src_dir: str, dst_dir: str) -> str:
