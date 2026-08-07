@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 1.4 阻斷修補與完整性測試
-驗證 包含歷史重複列之舊 DB Migration 清理、截斷 supplemental metadata、JSON 獨佔指派與相容性。
+Google Takeout ZIP 匯入引擎 Phase 1.5 阻斷修補與完整性測試
+驗證 包含外鍵與歷史重複列之舊 DB FK-Safe Migration 清理、截斷 supplemental metadata、JSON 獨佔指派與相容性。
 """
 
 import os
@@ -47,13 +47,13 @@ class TestTakeoutPhase1(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_db_migration_with_existing_duplicate_rows(self):
-        """驗證包含歷史重複成員列的舊資料庫在開啟時，Migration 能夠自動清理重複列並成功創建 UNIQUE 索引"""
-        db_path = os.path.join(self.dst_dir, "_ImportTemp", "dup_old_takeout.db")
+    def test_db_migration_with_existing_duplicate_rows_and_foreign_keys(self):
+        """驗證開啟 PRAGMA foreign_keys = ON 時，包含外鍵引用與重複成員列的舊資料庫 Migration 能 100% 外鍵安全地自動升級與清理"""
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "fk_old_takeout.db")
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-        # 手動建立舊版 DB 並故意注入重複 (archive_id, member_index) 寫入
         conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("""
         CREATE TABLE jobs (
             job_id TEXT PRIMARY KEY,
@@ -73,7 +73,8 @@ class TestTakeoutPhase1(unittest.TestCase):
             archive_size INTEGER NOT NULL,
             archive_mtime REAL NOT NULL,
             fingerprint TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id)
         );
         """)
         conn.execute("""
@@ -100,7 +101,9 @@ class TestTakeoutPhase1(unittest.TestCase):
             dest_reserved TEXT,
             final_destination TEXT,
             error_msg TEXT,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id),
+            FOREIGN KEY (archive_id) REFERENCES archives(archive_id)
         );
         """)
         conn.execute("""
@@ -109,26 +112,49 @@ class TestTakeoutPhase1(unittest.TestCase):
             job_id TEXT NOT NULL,
             media_member_id INTEGER NOT NULL,
             json_member_id INTEGER NOT NULL,
-            match_quality TEXT NOT NULL
+            match_quality TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id),
+            FOREIGN KEY (media_member_id) REFERENCES members(member_id),
+            FOREIGN KEY (json_member_id) REFERENCES members(member_id)
         );
         """)
 
-        # 故意注入重複成員列 (archive_id=1, member_index=0)
+        # 插入基本資料
+        conn.execute("INSERT INTO jobs VALUES ('j1', 'IMPORT', 'src', 'dst', 'now', 'now', 'RUNNING');")
+        conn.execute("INSERT INTO archives VALUES (1, 'j1', 'a.zip', 100, 1.0, 'fp1', 'now');")
+
+        # 故意注入重複成員列 (member_id=1, member_id=2 指向同一 member_index=0)
         conn.execute("""
-        INSERT INTO members (job_id, archive_id, archive_fingerprint, member_index, member_name, normalized_path, filename, member_crc, uncompressed_size, compressed_size, is_media, is_json, status, updated_at)
-        VALUES ('j1', 1, 'fp1', 0, 'test.jpg', 'test.jpg', 'test.jpg', 123, 100, 80, 1, 0, 'VALIDATED', '2026-08-07');
+        INSERT INTO members (member_id, job_id, archive_id, archive_fingerprint, member_index, member_name, normalized_path, filename, member_crc, uncompressed_size, compressed_size, is_media, is_json, status, updated_at)
+        VALUES (1, 'j1', 1, 'fp1', 0, 'test.jpg', 'test.jpg', 'test.jpg', 123, 100, 80, 1, 0, 'VALIDATED', '2026-08-07');
         """)
         conn.execute("""
-        INSERT INTO members (job_id, archive_id, archive_fingerprint, member_index, member_name, normalized_path, filename, member_crc, uncompressed_size, compressed_size, is_media, is_json, status, updated_at)
-        VALUES ('j1', 1, 'fp1', 0, 'test.jpg', 'test.jpg', 'test.jpg', 123, 100, 80, 1, 0, 'VALIDATED', '2026-08-07');
+        INSERT INTO members (member_id, job_id, archive_id, archive_fingerprint, member_index, member_name, normalized_path, filename, member_crc, uncompressed_size, compressed_size, is_media, is_json, status, updated_at)
+        VALUES (2, 'j1', 1, 'fp1', 0, 'test.jpg', 'test.jpg', 'test.jpg', 123, 100, 80, 1, 0, 'VALIDATED', '2026-08-07');
         """)
+        # 插入 JSON 成員 (member_id=3)
+        conn.execute("""
+        INSERT INTO members (member_id, job_id, archive_id, archive_fingerprint, member_index, member_name, normalized_path, filename, member_crc, uncompressed_size, compressed_size, is_media, is_json, status, updated_at)
+        VALUES (3, 'j1', 1, 'fp1', 1, 'test.jpg.json', 'test.jpg.json', 'test.jpg.json', 124, 50, 40, 0, 1, 'VALIDATED', '2026-08-07');
+        """)
+
+        # 建立 Sidecar 配對引用會被刪除的 member_id=2
+        conn.execute("INSERT INTO sidecar_links VALUES (1, 'j1', 2, 3, 'EXACT_FULL_PATH');")
+
         conn.commit()
         conn.close()
 
-        # 使用 TakeoutStateManager 開啟，驗證 Migration 清理重複資料與建立 UNIQUE 索引是否 100% 成功
+        # 使用 TakeoutStateManager 開啟，驗證 FK-Safe Migration 能否順利升級並重導外鍵
         state_mgr = import_state.TakeoutStateManager(db_path)
 
-        # 在無重複阻斷後執行 UPSERT 寫入
+        # 驗證資料庫外鍵關聯完整且無拋出 IntegrityError
+        with state_mgr._get_conn() as c:
+            cursor = c.cursor()
+            cursor.execute("PRAGMA foreign_key_check;")
+            fk_errors = cursor.fetchall()
+            self.assertEqual(len(fk_errors), 0)
+
+        # 測試在升級後的資料庫中執行 UPSERT
         m_item = {
             "job_id": "j1", "archive_id": 1, "archive_fingerprint": "fp1",
             "member_index": 0, "member_name": "test.jpg", "normalized_path": "test.jpg",

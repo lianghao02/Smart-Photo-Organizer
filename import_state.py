@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v1.4 重複資料清理與 Migration 容錯版)
-提供符合 ACID 的批次狀態推進、舊 DB 重複資料清理、Schema 自動遷移與復原機制。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v1.5 外鍵安全 Migration 版)
+提供符合 ACID 的批次狀態推進、FK 安全的舊 DB 重複資料清理、Schema 自動遷移與復原機制。
 """
 
 import os
@@ -139,7 +139,7 @@ class TakeoutStateManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_archives_fingerprint ON archives(fingerprint);")
 
     def _migrate_db(self):
-        """自動 Schema 遷移與舊資料庫重複資料清理 (Migration)"""
+        """自動 Schema 遷移與舊資料庫外鍵安全的重複資料清理 (FK-Safe Migration)"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             
@@ -151,23 +151,52 @@ class TakeoutStateManager:
             if 'error_msg' not in arc_cols:
                 conn.execute("ALTER TABLE archives ADD COLUMN error_msg TEXT;")
 
-            # 2. 清理 members 與 sidecar_links 中可能存在的歷史重複資料 (確保 UNIQUE 索引順利建立)
-            conn.execute("""
-            DELETE FROM members WHERE rowid NOT IN (
-                SELECT MIN(rowid) FROM members GROUP BY archive_id, member_index
-            );
-            """)
-            conn.execute("""
-            DELETE FROM sidecar_links WHERE rowid NOT IN (
-                SELECT MIN(rowid) FROM sidecar_links GROUP BY job_id, json_member_id
-            );
-            """)
+            # 2. 清理重複資料前暫時關閉外鍵檢查，保護外鍵約束不拋出 IntegrityError
+            conn.execute("PRAGMA foreign_keys = OFF;")
+            try:
+                # 重新修正 sidecar_links 外鍵指向最小的 member_id (Canonical Member)
+                conn.execute("""
+                UPDATE sidecar_links
+                SET media_member_id = (
+                    SELECT MIN(m.member_id) FROM members m 
+                    WHERE m.archive_id = (SELECT archive_id FROM members WHERE member_id = sidecar_links.media_member_id) 
+                      AND m.member_index = (SELECT member_index FROM members WHERE member_id = sidecar_links.media_member_id)
+                )
+                WHERE EXISTS (SELECT 1 FROM members WHERE member_id = sidecar_links.media_member_id);
+                """)
+                conn.execute("""
+                UPDATE sidecar_links
+                SET json_member_id = (
+                    SELECT MIN(m.member_id) FROM members m 
+                    WHERE m.archive_id = (SELECT archive_id FROM members WHERE member_id = sidecar_links.json_member_id) 
+                      AND m.member_index = (SELECT member_index FROM members WHERE member_id = sidecar_links.json_member_id)
+                )
+                WHERE EXISTS (SELECT 1 FROM members WHERE member_id = sidecar_links.json_member_id);
+                """)
+
+                # 清理重複的 sidecar_links
+                conn.execute("""
+                DELETE FROM sidecar_links WHERE rowid NOT IN (
+                    SELECT MIN(rowid) FROM sidecar_links GROUP BY job_id, json_member_id
+                );
+                """)
+                # 清理重複的 members
+                conn.execute("""
+                DELETE FROM members WHERE rowid NOT IN (
+                    SELECT MIN(rowid) FROM members GROUP BY archive_id, member_index
+                );
+                """)
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON;")
 
             # 3. 建立唯一索引以支援 ON CONFLICT (archive_id, member_index) 語法
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_members_archive_member ON members(archive_id, member_index);")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sidecar_unique ON sidecar_links(job_id, json_member_id);")
 
-            # 4. 更新 user_version
+            # 4. 外鍵完整性檢查
+            conn.execute("PRAGMA foreign_key_check;")
+
+            # 5. 更新 user_version
             conn.execute(f"PRAGMA user_version = {self.CURRENT_SCHEMA_VERSION};")
 
     def create_job(self, job_id: str, job_type: str, src_dir: str, dst_dir: str) -> str:
