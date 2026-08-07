@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模组 (v3.1 排除預覽單向狀態保護版)
-提供符合 ACID 的批次狀態推進、單向狀態保護 (Prevent Status Downgrade)、job_type 隔離之續傳檢索與崩潰恢復機制。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v3.2 全量封存檔與 CANCELLED 復原版)
+提供符合 ACID 的批次狀態推進、單向狀態保護、job_type 隔離、全量封存檔查詢與 CANCELLED 成員復原機制。
 """
 
 import os
@@ -281,6 +281,13 @@ class TakeoutStateManager:
             row = cursor.fetchone()
             return dict(row) if row else None
 
+    def get_job_archives(self, job_id: str) -> List[Dict[str, Any]]:
+        """全量讀取指定 Job ID 登記的所有封存檔紀錄 (包含僅存 Sidecar JSON 之 ZIP)"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM archives WHERE job_id = ?", (job_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
     def register_members_batch(self, members_data: List[Dict[str, Any]]):
         """
         採用單向狀態推進 UPSERT (Prevent Status Downgrade)：
@@ -437,15 +444,16 @@ class TakeoutStateManager:
 
     def recover_and_get_pending_members(self, job_id: str) -> List[Dict[str, Any]]:
         """
-        Phase 2/Phase 3 崩潰恢復與續傳引擎 (Crash Recovery Engine - 帶單向保護與邊界防禦)
-        已排除 COMPLETED, PREVIEW_ANALYZED, SECURITY_REJECTED, DUPLICATE_SKIPPED, RECOVERY_CONFLICT, CANCELLED
+        Phase 2/Phase 3 崩潰恢復與續傳引擎 (Crash Recovery Engine - 帶 CANCELLED 成員復原)
+        已排除 COMPLETED, PREVIEW_ANALYZED, SECURITY_REJECTED, DUPLICATE_SKIPPED, RECOVERY_CONFLICT
+        針對 CANCELLED 狀態的成員自動將其復原為 SECURITY_VALIDATED，確保使用者按下「開始」續傳時不漏處理。
         """
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 SELECT * FROM members 
-                WHERE job_id = ? AND is_media = 1 AND status NOT IN (?, ?, ?, ?, ?, ?)
+                WHERE job_id = ? AND is_media = 1 AND status NOT IN (?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -453,8 +461,7 @@ class TakeoutStateManager:
                     TakeoutState.PREVIEW_ANALYZED,
                     TakeoutState.SECURITY_REJECTED,
                     TakeoutState.DUPLICATE_SKIPPED,
-                    TakeoutState.RECOVERY_CONFLICT,
-                    TakeoutState.CANCELLED
+                    TakeoutState.RECOVERY_CONFLICT
                 )
             )
             rows = [dict(r) for r in cursor.fetchall()]
@@ -471,8 +478,15 @@ class TakeoutStateManager:
             part_exists = is_part_safe and os.path.isfile(part_p)
             dest_exists = dest_p is not None and os.path.isfile(dest_p) and not os.path.islink(dest_p)
 
-            # 1. EXTRACTING 狀態處置
-            if status == TakeoutState.EXTRACTING:
+            # CANCELLED 狀態復原
+            if status == TakeoutState.CANCELLED:
+                self.update_member_status(mid, TakeoutState.SECURITY_VALIDATED)
+                m['status'] = TakeoutState.SECURITY_VALIDATED
+                m['part_path'] = None
+                pending_members.append(m)
+
+            # EXTRACTING 狀態處置
+            elif status == TakeoutState.EXTRACTING:
                 if part_exists:
                     try: os.remove(part_p)
                     except OSError: pass
@@ -481,7 +495,7 @@ class TakeoutStateManager:
                 m['part_path'] = None
                 pending_members.append(m)
 
-            # 2. VERIFIED / METADATA_PARSED 狀態處置
+            # VERIFIED / METADATA_PARSED 狀態處置
             elif status in (TakeoutState.VERIFIED, TakeoutState.METADATA_PARSED):
                 if part_exists:
                     pending_members.append(m)
@@ -491,7 +505,7 @@ class TakeoutStateManager:
                     m['part_path'] = None
                     pending_members.append(m)
 
-            # 3. DESTINATION_RESERVED 狀態處置
+            # DESTINATION_RESERVED 狀態處置
             elif status == TakeoutState.DESTINATION_RESERVED:
                 if part_exists and not dest_exists:
                     pending_members.append(m)

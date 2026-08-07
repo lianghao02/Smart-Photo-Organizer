@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v3.1 API 契合法版)
-讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，與 DateParser 的 get_date_details 介面無縫整合。
+Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v3.2 中央格式與 95 分權重契合版)
+讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，與 DateParser 及 ConfigConstants.EXT_PHOTOS 完全契合。
 """
 
 import os
 import json
 import datetime
 from typing import Optional, Dict, Any
+
+import main as app_main
 
 
 class MediaMetadataExtractor:
@@ -43,32 +45,39 @@ class MediaMetadataExtractor:
         rename_mode: str = "date_seq"
     ) -> Dict[str, Any]:
         """
-        針對 .part 暫存檔解析 EXIF/ffprobe Metadata，整合 Sidecar JSON 呼叫 DateParser.get_date_details() 進行日期決策
+        針對 .part 暫存檔解析 EXIF/ffprobe Metadata，整合 Sidecar JSON 呼叫 DateParser.get_date_details() 進行 95 分權重與衝突評估
         回傳最佳日期候選、置信度與與 Processor 一致的年/月/Photos|Videos 目標資料夾路徑。
         """
         orig_ext = os.path.splitext(filename)[1].lower()
-        is_photo = orig_ext in (
-            '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.raw', '.arw', '.cr2', '.nef'
-        )
+
+        # 使用主程式中央 ConfigConstants.EXT_PHOTOS 定義 (涵蓋 RAW 檔如 .cr3, .dng, .orf, .rw2, .pef, .sr2 等)
+        ext_photos = getattr(app_main.ConfigConstants, 'EXT_PHOTOS', {
+            '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.raw', '.arw', '.cr2', '.nef',
+            '.cr3', '.dng', '.orf', '.rw2', '.pef', '.sr2'
+        })
+        is_photo = orig_ext in ext_photos
         sub_type_folder = "Photos" if is_photo else "Videos"
 
-        # 呼叫專案核心 DateParser 的 get_date_details 方法
-        details = date_parser.get_date_details(part_path, is_photo=is_photo)
+        # 轉換 Sidecar JSON 格式時間為 ISO 字串供 DateParser 以 95 分權重納入候選評估
+        google_json_date = None
+        if json_data and 'timestamp' in json_data:
+            try:
+                dt = datetime.datetime.fromtimestamp(json_data['timestamp'], datetime.timezone.utc)
+                google_json_date = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                pass
+
+        # 呼叫專案核心 DateParser 的 get_date_details 方法 (包含 95 分 Google Takeout JSON 權重)
+        details = date_parser.get_date_details(
+            part_path,
+            is_photo=is_photo,
+            is_cloud=False,
+            shell_reader=None,
+            google_json_date=google_json_date
+        )
         parsed_dt = details.get("date")
         confidence = details.get("confidence", 0)
         source_tag = details.get("source", "未知")
-
-        # 若有 Sidecar JSON 時間且其可信度較高或作為參考
-        if json_data and 'timestamp' in json_data:
-            try:
-                json_dt = datetime.datetime.fromtimestamp(json_data['timestamp'], datetime.timezone.utc)
-                # 當現有 EXIF 無日期或可信度低於 Google Takeout JSON (75 分) 時採納
-                if not parsed_dt or confidence < 75:
-                    parsed_dt = json_dt.replace(tzinfo=None)
-                    source_tag = "Google Takeout JSON"
-                    confidence = 75
-            except Exception:
-                pass
 
         if parsed_dt:
             date_str = parsed_dt.strftime('%Y-%m-%d')
@@ -95,5 +104,6 @@ class MediaMetadataExtractor:
             "confidence": confidence,
             "target_dir": target_subfolder,
             "parsed_dt": parsed_dt,
-            "is_photo": is_photo
+            "is_photo": is_photo,
+            "has_conflict": details.get("has_conflict", False)
         }

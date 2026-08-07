@@ -679,9 +679,9 @@ class DateParser:
     def get_date(self, path: str, is_photo: bool, is_cloud: bool = False, shell_reader: Any = None) -> Optional[datetime.datetime]:
         return self.get_date_details(path, is_photo, is_cloud, shell_reader).get("date")
 
-    def get_date_details(self, path: str, is_photo: bool, is_cloud: bool = False, shell_reader: Any = None) -> Dict[str, Any]:
+    def get_date_details(self, path: str, is_photo: bool, is_cloud: bool = False, shell_reader: Any = None, google_json_date: Optional[str] = None) -> Dict[str, Any]:
         """收集全部候選日期後依可信度決策，並回傳來源、分數與衝突狀態。"""
-        cache_key = (os.path.abspath(path), is_photo, is_cloud)
+        cache_key = (os.path.abspath(path), is_photo, is_cloud, google_json_date)
         with self._cache_lock:
             cached = self._cache.get(cache_key)
             if cached is not None:
@@ -693,14 +693,22 @@ class DateParser:
         if is_photo and Image and not is_cloud:
             candidates.extend(self._get_exif_date_candidates(path))
 
-        # Google Takeout Sidecar
-        try:
-            for jp in [path + ".json", os.path.splitext(path)[0] + ".json"]:
-                if os.path.exists(jp):
-                    d = self._parse_json_date(jp)
+        # Google Takeout Sidecar (若由 Takeout 引擎傳入 google_json_date 或由同名 JSON 檔讀取)
+        if google_json_date:
+            try:
+                d = self._parse_iso_date(google_json_date)
+                if d:
                     self._append_candidate(candidates, d, "Google Takeout JSON", ConfigConstants.DATE_CONFIDENCE["google_json"])
-        except Exception:
-            pass
+            except Exception:
+                pass
+        else:
+            try:
+                for jp in [path + ".json", os.path.splitext(path)[0] + ".json"]:
+                    if os.path.exists(jp):
+                        d = self._parse_json_date(jp)
+                        self._append_candidate(candidates, d, "Google Takeout JSON", ConfigConstants.DATE_CONFIDENCE["google_json"])
+            except Exception:
+                pass
 
         # 影片容器後設資料。ffprobe 只讀取標頭，不會重新編碼或修改原檔。
         if not is_photo and not is_cloud:
