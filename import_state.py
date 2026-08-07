@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v2.2 Phase 2.2 嚴謹邊界與續傳檢索版)
-提供符合 ACID 的批次狀態推進、嚴格 commonpath 邊界防禦、歷史 Job 續傳檢索與復原機制。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v3.0 Phase 3 單向狀態推進與 Phase 3 支援版)
+提供符合 ACID 的批次狀態推進、單向狀態保護 (Prevent Status Downgrade)、job_type 隔離之續傳檢索與崩潰恢復機制。
 """
 
 import os
@@ -155,7 +155,6 @@ class TakeoutStateManager:
             # 2. 清理重複資料前暫時關閉外鍵檢查，保護外鍵約束不拋出 IntegrityError
             conn.execute("PRAGMA foreign_keys = OFF;")
             try:
-                # 重新修正 sidecar_links 外鍵指向最小的 member_id (Canonical Member)
                 conn.execute("""
                 UPDATE sidecar_links
                 SET media_member_id = (
@@ -175,13 +174,11 @@ class TakeoutStateManager:
                 WHERE EXISTS (SELECT 1 FROM members WHERE member_id = sidecar_links.json_member_id);
                 """)
 
-                # 清理重複的 sidecar_links
                 conn.execute("""
                 DELETE FROM sidecar_links WHERE rowid NOT IN (
                     SELECT MIN(rowid) FROM sidecar_links GROUP BY job_id, json_member_id
                 );
                 """)
-                # 清理重複的 members
                 conn.execute("""
                 DELETE FROM members WHERE rowid NOT IN (
                     SELECT MIN(rowid) FROM members GROUP BY archive_id, member_index
@@ -209,9 +206,9 @@ class TakeoutStateManager:
             )
         return job_id
 
-    def find_resumable_job(self, src_dir: str, dst_dir: str, archive_fingerprints: List[str]) -> Optional[str]:
+    def find_resumable_job(self, src_dir: str, dst_dir: str, archive_fingerprints: List[str], job_type: str = JobType.IMPORT) -> Optional[str]:
         """
-        尋找可續傳的歷史 Job（相同 src, dst 且封存檔指紋完全吻合，狀態非終止）
+        尋找可續傳的歷史 Job（相同 src, dst, job_type 且封存檔指紋完全吻合，狀態非終止或包含 CANCELLED）
         """
         if not archive_fingerprints:
             return None
@@ -224,10 +221,10 @@ class TakeoutStateManager:
             cursor.execute(
                 """
                 SELECT job_id FROM jobs 
-                WHERE src_dir = ? AND dst_dir = ? AND status IN (?, ?, ?)
+                WHERE src_dir = ? AND dst_dir = ? AND job_type = ? AND status IN (?, ?, ?, ?)
                 ORDER BY created_at DESC
                 """,
-                (norm_src, norm_dst, "RUNNING", TakeoutState.FAILED, TakeoutState.COMPLETED_WITH_ERRORS)
+                (norm_src, norm_dst, job_type, "RUNNING", TakeoutState.FAILED, TakeoutState.COMPLETED_WITH_ERRORS, TakeoutState.CANCELLED)
             )
             jobs = cursor.fetchall()
 
@@ -259,7 +256,6 @@ class TakeoutStateManager:
         now = datetime.datetime.now().isoformat()
         with self._get_conn() as conn:
             cursor = conn.cursor()
-            # 若已有相同 job_id 與 fingerprint，直接回傳 archive_id
             cursor.execute("SELECT archive_id FROM archives WHERE job_id = ? AND fingerprint = ?", (job_id, fingerprint))
             row = cursor.fetchone()
             if row:
@@ -286,7 +282,10 @@ class TakeoutStateManager:
             return dict(row) if row else None
 
     def register_members_batch(self, members_data: List[Dict[str, Any]]):
-        """採用安全 UPSERT (ON CONFLICT DO UPDATE) 替代 INSERT OR REPLACE，保護 member_id 不變"""
+        """
+        採用單向狀態推進 UPSERT (Prevent Status Downgrade)：
+        若成員狀態已推進至 VERIFIED, METADATA_PARSED, DESTINATION_RESERVED, COMPLETED，重新掃描時保護該狀態不被降級。
+        """
         if not members_data:
             return
         now = datetime.datetime.now().isoformat()
@@ -318,7 +317,11 @@ class TakeoutStateManager:
                 is_media, is_json, status, error_msg, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(archive_id, member_index) DO UPDATE SET
-                status = excluded.status,
+                status = CASE
+                    WHEN members.status IN ('VERIFIED', 'METADATA_PARSED', 'DESTINATION_RESERVED', 'COMPLETED', 'DUPLICATE_SKIPPED')
+                    THEN members.status
+                    ELSE excluded.status
+                END,
                 error_msg = excluded.error_msg,
                 updated_at = excluded.updated_at
             """, rows)
@@ -363,11 +366,41 @@ class TakeoutStateManager:
             row = cursor.fetchone()
             return dict(row) if row else None
 
+    def get_sidecar_for_media(self, media_member_id: int) -> Optional[Dict[str, Any]]:
+        """讀取與指定媒體配對的 Sidecar JSON 成員資料"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT m.* FROM sidecar_links sl
+                JOIN members m ON sl.json_member_id = m.member_id
+                WHERE sl.media_member_id = ?
+                """,
+                (media_member_id,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
     def get_job_members_by_status(self, job_id: str, status: str) -> List[Dict[str, Any]]:
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM members WHERE job_id = ? AND status = ?", (job_id, status))
             return [dict(row) for row in cursor.fetchall()]
+
+    def find_existing_sha256_dest(self, sha256_hash: str) -> Optional[str]:
+        """全域去重查詢：搜尋 SQLite 中任何已有相同 SHA-256 的已完成媒體目的路徑"""
+        if not sha256_hash:
+            return None
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT final_destination FROM members WHERE sha256 = ? AND status = ? AND final_destination IS NOT NULL",
+                (sha256_hash, TakeoutState.COMPLETED)
+            )
+            row = cursor.fetchone()
+            if row and row['final_destination'] and os.path.isfile(row['final_destination']):
+                return row['final_destination']
+        return None
 
     def _is_safe_part_path(self, job_id: str, part_path: str) -> bool:
         """
@@ -386,11 +419,9 @@ class TakeoutStateManager:
         job_temp_dir = os.path.realpath(os.path.join(dst_dir, "_ImportTemp", job_id))
         real_part = os.path.realpath(part_path)
 
-        # 1. 檢查副檔名
         if not real_part.lower().endswith('.part'):
             return False
 
-        # 2. 精準檢查 commonpath 是否屬於工作專屬暫存目錄
         try:
             common = os.path.commonpath([job_temp_dir, real_part])
             return os.path.normcase(common) == os.path.normcase(job_temp_dir)
@@ -406,7 +437,7 @@ class TakeoutStateManager:
 
     def recover_and_get_pending_members(self, job_id: str) -> List[Dict[str, Any]]:
         """
-        Phase 2 崩潰恢復與續傳引擎 (Crash Recovery Engine - 帶 commonpath 邊界防禦)
+        Phase 2/Phase 3 崩潰恢復與續傳引擎 (Crash Recovery Engine - 帶單向保護與邊界防禦)
         """
         with self._get_conn() as conn:
             cursor = conn.cursor()

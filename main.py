@@ -2287,12 +2287,14 @@ class WebBridge:
             report = indexer.build_cross_zip_index(job_id)
 
             # ============================================================
-            # Phase 2：單檔按需串流解壓與完整性校驗 (Single-Item Extraction Pipeline)
+            # Phase 2 & Phase 3：逐一媒體單檔 End-to-End 歸檔流水線 (Single-Item Pipeline)
             # ============================================================
-            self._on_log("⚡ 啟動 Phase 2 按需單檔串流解壓與 CRC32/SHA-256 品質校驗...", "info")
+            self._on_log("⚡ 啟動 Phase 2/3 按需單檔串流解壓、EXIF/Sidecar 日期決策與 Windows os.rename() 歸檔...", "info")
             pending_members = state_mgr.recover_and_get_pending_members(job_id)
             extracted_count = 0
-            extract_errors = 0
+            archived_count = 0
+            skipped_dup_count = 0
+            pipeline_errors = 0
 
             archive_map = {}
             for pm in pending_members:
@@ -2301,7 +2303,13 @@ class WebBridge:
                     arc_info = state_mgr.get_archive(arc_id)
                     archive_map[arc_id] = arc_info['archive_path'] if arc_info else None
 
+            # 命名鎖與記憶體內全域 reserved_destinations 集合 (防止 TOCTOU 檔名衝突)
+            naming_lock = threading.Lock()
+            reserved_destinations: Set[str] = set()
+
             import uuid
+            import media_metadata
+
             for idx, m in enumerate(pending_members, 1):
                 if self._stop_event.is_set():
                     state_mgr.update_job_status(job_id, import_state.TakeoutState.CANCELLED)
@@ -2315,10 +2323,10 @@ class WebBridge:
                 archive_path = archive_map.get(m['archive_id'])
                 if not archive_path or not os.path.exists(archive_path):
                     state_mgr.update_member_status(mid, import_state.TakeoutState.FAILED, error_msg="封存檔路徑不存在")
-                    extract_errors += 1
+                    pipeline_errors += 1
                     continue
 
-                # 產生獨立 UUID 的 .part 暫存路徑
+                # 1. 按需單檔串流解壓 ➔ EXTRACTING ➔ VERIFIED
                 part_filename = f"{uuid.uuid4().hex}.part"
                 part_path = os.path.join(dst, "_ImportTemp", job_id, part_filename)
 
@@ -2336,22 +2344,129 @@ class WebBridge:
                     )
 
                     actual_part_path = res['part_path']
+                    sha256_hash = res['sha256']
                     state_mgr.update_member_status(
                         mid,
                         import_state.TakeoutState.VERIFIED,
                         part_path=actual_part_path,
-                        sha256=res['sha256']
+                        sha256=sha256_hash
                     )
                     extracted_count += 1
 
-                    # 預覽模式 (is_dry_run == True): 用完即刪除 .part 暫存檔，確保不佔用容量
-                    if is_dry_run:
+                    # 2. 全域 SHA-256 去重檢查
+                    dup_dest = state_mgr.find_existing_sha256_dest(sha256_hash)
+                    if dup_dest:
+                        state_mgr.update_member_status(
+                            mid,
+                            import_state.TakeoutState.DUPLICATE_SKIPPED,
+                            final_destination=dup_dest
+                        )
+                        skipped_dup_count += 1
                         if os.path.exists(actual_part_path):
                             try: os.remove(actual_part_path)
                             except OSError: pass
+                        continue
+
+                    # 3. 讀取 Sidecar JSON 數據
+                    sidecar_info = state_mgr.get_sidecar_for_media(mid)
+                    sidecar_json_bytes = None
+                    if sidecar_info and archive_path:
+                        try:
+                            with zipfile.ZipFile(archive_path, 'r') as zf:
+                                info_j = zf.infolist()[sidecar_info['member_index']]
+                                sidecar_json_bytes = zf.read(info_j)
+                        except Exception:
+                            pass
+
+                    json_data = media_metadata.MediaMetadataExtractor.parse_sidecar_json_bytes(sidecar_json_bytes)
+
+                    # 4. 從 .part 解析 EXIF/ffprobe ➔ METADATA_PARSED
+                    meta_res = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
+                        part_path=actual_part_path,
+                        filename=m['filename'],
+                        dst_root=dst,
+                        json_data=json_data,
+                        folder_pattern=getattr(self._app_config, 'folder_pattern', 'ym'),
+                        rename_mode=getattr(self._app_config, 'rename_mode', 'date_seq')
+                    )
+
+                    state_mgr.update_member_status(
+                        mid,
+                        import_state.TakeoutState.METADATA_PARSED,
+                        date_candidate=meta_res['date_str'],
+                        date_source=meta_res['date_source'],
+                        date_confidence=meta_res['confidence']
+                    )
+
+                    # 5. PREVIEW 預覽模式（DRY_RUN）：記錄狀態後立即清理 .part
+                    if is_dry_run:
+                        state_mgr.update_member_status(mid, import_state.TakeoutState.PREVIEW_ANALYZED)
+                        if os.path.exists(actual_part_path):
+                            try: os.remove(actual_part_path)
+                            except OSError: pass
+                        archived_count += 1
+                        continue
+
+                    # 6. 正式匯入模式：在 naming_lock 取得唯一目的檔案名稱 ➔ DESTINATION_RESERVED
+                    target_dir = meta_res['target_dir']
+                    os.makedirs(target_dir, exist_ok=True)
+                    orig_ext = os.path.splitext(m['filename'])[1].lower()
+
+                    final_dest = None
+                    with naming_lock:
+                        if meta_res['date_str']:
+                            base_name = meta_res['date_str'].replace('-', '_')
+                        else:
+                            base_name = "No_Date_" + os.path.splitext(m['filename'])[0]
+
+                        counter = 1
+                        while True:
+                            candidate_name = f"{base_name}_{counter:03d}{orig_ext}"
+                            candidate_path = os.path.join(target_dir, candidate_name)
+                            if candidate_path not in reserved_destinations and not os.path.exists(candidate_path):
+                                reserved_destinations.add(candidate_path)
+                                final_dest = candidate_path
+                                break
+                            counter += 1
+
+                    state_mgr.update_member_status(mid, import_state.TakeoutState.DESTINATION_RESERVED, dest_reserved=final_dest)
+
+                    # 7. 執行 Windows os.rename() 原子更名（零資料覆寫防護與 FileExistsError 輪替）
+                    rename_success = False
+                    for retry in range(5):
+                        try:
+                            os.rename(actual_part_path, final_dest)
+                            rename_success = True
+                            break
+                        except FileExistsError:
+                            # 發生檔案碰撞，產生新的候選流水號重新更名
+                            with naming_lock:
+                                counter += 1
+                                candidate_name = f"{base_name}_{counter:03d}{orig_ext}"
+                                final_dest = os.path.join(target_dir, candidate_name)
+                                reserved_destinations.add(final_dest)
+                            state_mgr.update_member_status(mid, import_state.TakeoutState.DESTINATION_RESERVED, dest_reserved=final_dest)
+                        except OSError as e:
+                            raise e
+
+                    if not rename_success:
+                        raise OSError(f"os.rename 重試失敗: {final_dest}")
+
+                    # 8. Sidecar JSON 檔同步跟隨寫入 (若開啟 Sidecar 功能)
+                    if sidecar_json_bytes and getattr(self._app_config, 'sidecar_enabled', True):
+                        json_dest = final_dest + ".json"
+                        try:
+                            with open(json_dest, 'wb') as jf:
+                                jf.write(sidecar_json_bytes)
+                        except OSError:
+                            pass
+
+                    # 9. 提交 COMPLETED ➔ .part 已移走，單檔完整流水線結束！
+                    state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED, final_destination=final_dest)
+                    archived_count += 1
 
                     if idx % 50 == 0 or idx == len(pending_members):
-                        self._on_log(f" └─ 串流解壓推進中 [{idx}/{len(pending_members)}] 成功: {extracted_count} 個", "info")
+                        self._on_log(f" └─ 歸檔進行中 [{idx}/{len(pending_members)}] 成功: {archived_count} 個, 跳過重複: {skipped_dup_count} 個", "info")
 
                 except Exception as e:
                     if self._stop_event.is_set():
@@ -2361,25 +2476,26 @@ class WebBridge:
                         self._on_status("paused")
                         return
 
-                    extract_errors += 1
+                    pipeline_errors += 1
                     state_mgr.update_member_status(mid, import_state.TakeoutState.FAILED, error_msg=str(e))
-                    self._on_log(f"⚠️ 成員串流解壓失敗 [{m['filename']}]: {e}", "warning")
+                    self._on_log(f"⚠️ 成員歸檔失敗 [{m['filename']}]: {e}", "warning")
 
-            final_status = import_state.TakeoutState.COMPLETED_WITH_ERRORS if (archive_errors > 0 or extract_errors > 0) else import_state.TakeoutState.COMPLETED
+            final_status = import_state.TakeoutState.COMPLETED_WITH_ERRORS if (archive_errors > 0 or pipeline_errors > 0) else import_state.TakeoutState.COMPLETED
             state_mgr.update_job_status(job_id, final_status)
 
             self._on_log("=" * 60, "info")
-            self._on_log(f"📊 【ZIP 解壓與校驗完成報告】 (Job ID: {job_id})", "info")
+            self._on_log(f"📊 【Takeout ZIP 直讀歸檔完成報告】 (Job ID: {job_id})", "info")
             self._on_log(f"  • 媒體檔案總數：{report['media_count']:,} 個", "info")
-            self._on_log(f"  • 成功解壓校驗 (VERIFIED)：{extracted_count:,} 個", "info")
+            self._on_log(f"  • 成功歸檔/預覽 (COMPLETED)：{archived_count:,} 個", "info")
+            self._on_log(f"  • 跳過重複內容 (DUPLICATE_SKIPPED)：{skipped_dup_count:,} 個", "info")
             self._on_log(f"  • Sidecar 精準配對數：{report['matched_pair_count']:,} 組", "info")
             self._on_log(f"  • 宣告解壓後總容量：{report['total_uncompressed_gb']} GB", "info")
-            if extract_errors > 0:
-                self._on_log(f"  ⚠️ 解壓失敗/損毀成員：{extract_errors} 個", "warning")
+            if pipeline_errors > 0:
+                self._on_log(f"  ⚠️ 失敗/損毀成員：{pipeline_errors} 個", "warning")
             self._on_log("=" * 60, "info")
-            self._on_log(f"=== ✅ Phase 2 單檔按需串流解壓完成！狀態: {final_status} ===", "info")
+            self._on_log(f"=== ✅ Phase 3 逐檔直讀歸檔完成！狀態: {final_status} ===", "info")
 
-            msg = f"Phase 2 解壓完成 ({final_status})！\n成功解壓: {extracted_count} 個\n失敗成員: {extract_errors} 個"
+            msg = f"Takeout 直讀歸檔完成 ({final_status})！\n成功歸檔: {archived_count} 個\n跳過重複: {skipped_dup_count} 個\n失敗成員: {pipeline_errors} 個"
             with self._queue_lock:
                 self._process_finished_msg = msg
             self._on_status("paused")
