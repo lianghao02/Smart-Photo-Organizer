@@ -206,12 +206,12 @@ class WinShellReader:
                     $item = $folder.ParseName($name)
                     
                     if ($item) {
-                        # 12: 拍攝日期, 208/207/191: 媒體建立日期, 3: 修改日期 (0.001s 極速直查)
+                        # 12: 拍攝日期，208/207/191: 媒體建立日期。
+                        # 不可回退到索引 3（檔案修改日期），否則複製過的舊影片會歸錯年份。
                         $dateTaken = $folder.GetDetailsOf($item, 12)
                         if (-not $dateTaken) { $dateTaken = $folder.GetDetailsOf($item, 208) }
                         if (-not $dateTaken) { $dateTaken = $folder.GetDetailsOf($item, 207) }
                         if (-not $dateTaken) { $dateTaken = $folder.GetDetailsOf($item, 191) }
-                        if (-not $dateTaken) { $dateTaken = $folder.GetDetailsOf($item, 3) }
                         
                         $model = $folder.GetDetailsOf($item, 30)
                         $maker = $folder.GetDetailsOf($item, 32)
@@ -421,11 +421,34 @@ class ConfigConstants:
     CONFIG_FILE = "config.json"
     HISTORY_FILE = "history_log.json"
     BLOCK_SIZE  = 65536
+    FFPROBE_PATH = os.getenv("FFPROBE_PATH", "ffprobe")
+    MEDIA_METADATA_TIMEOUT_SECONDS = 15
 
     EXT_PHOTOS: Set[str] = {'.jpg', '.jpeg', '.png', '.heic', '.bmp', '.tiff', '.raw', '.arw', '.webp', '.nef', '.cr2', '.cr3', '.dng', '.orf', '.rw2', '.pef', '.sr2'}
     EXT_VIDEOS: Set[str] = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.3gp', '.m4v'}
     EXT_JUNK:   Set[str] = {'.json', '.ini', '.db', '.html', '.txt', '.tmp', '.url'}
     SCREENSHOT_KEYWORDS  = ['screenshot', 'screen shot', 'captura', '螢幕擷取', '截圖', 'snapshot']
+    SURVEILLANCE_KEYWORDS = ['cctv', '監視器', '監控', 'surveillance', 'security camera', 'nvr', 'dvr', 'ipcam']
+    EXCLUSION_SCORE_THRESHOLD = 7
+    DATE_CONFLICT_MIN_CONFIDENCE = 85
+    DATE_LOW_CONFIDENCE_THRESHOLD = 50
+    DATE_CONFIDENCE = {
+        "exif_original": 100,
+        "google_json": 95,
+        "video_container": 90,
+        "exif_digitized": 85,
+        "camera_filename": 70,
+        "generic_filename": 35,
+        "windows_media": 60,
+        "exif_datetime": 50,
+        "file_created": 20,
+    }
+    COMMON_SCREEN_SIZES = {
+        (1280, 720), (1366, 768), (1600, 900), (1920, 1080),
+        (2560, 1440), (3840, 2160), (720, 1280), (1080, 1920),
+        (1080, 2340), (1080, 2400), (1170, 2532), (1440, 2560),
+    }
+    MANAGED_SCAN_EXCLUDED_DIRS = {'_Excluded', '_Review'}
 
 
 class AppConfig:
@@ -438,6 +461,7 @@ class AppConfig:
         self.skip_existing  = False
         self.folder_pattern = "ym"
         self.rename_mode    = "date_seq"
+        self.sidecar_enabled = True
         self.load()
 
     @classmethod
@@ -456,6 +480,7 @@ class AppConfig:
                     self.skip_existing  = data.get('skip_existing', False)
                     self.folder_pattern = data.get('folder_pattern', 'ym')
                     self.rename_mode    = data.get('rename_mode', 'date_seq')
+                    self.sidecar_enabled = data.get('sidecar_enabled', True)
             except Exception:
                 pass
 
@@ -467,7 +492,8 @@ class AppConfig:
                     'dest': self.dest_dir,
                     'skip_existing': self.skip_existing,
                     'folder_pattern': self.folder_pattern,
-                    'rename_mode': self.rename_mode
+                    'rename_mode': self.rename_mode,
+                    'sidecar_enabled': self.sidecar_enabled,
                 }, f, indent=4)
         except Exception as e:
             print(f"⚠️ 無法儲存設定: {e}")
@@ -639,73 +665,217 @@ class Dedup:
 # 模組五：DateParser — 多策略日期解析
 # ==============================================================================
 class DateParser:
-    """依序嘗試：JSON Sidecar → EXIF SubIFD → EXIF 標準 → 檔名 Regex → 影片同名照片"""
+    """依可信度解析拍攝日期，避免把複製後的檔案時間誤當成拍攝時間。"""
 
     def __init__(self):
         self.logger = Logger.get_instance()
+        self._cache: Dict[tuple, Dict[str, Any]] = {}
+        self._cache_lock = threading.Lock()
 
     def get_date(self, path: str, is_photo: bool, is_cloud: bool = False, shell_reader: Any = None) -> Optional[datetime.datetime]:
-        # 1. JSON Sidecar
+        return self.get_date_details(path, is_photo, is_cloud, shell_reader).get("date")
+
+    def get_date_details(self, path: str, is_photo: bool, is_cloud: bool = False, shell_reader: Any = None) -> Dict[str, Any]:
+        """收集全部候選日期後依可信度決策，並回傳來源、分數與衝突狀態。"""
+        cache_key = (os.path.abspath(path), is_photo, is_cloud)
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        candidates: list[Dict[str, Any]] = []
+
+        # EXIF 原始拍攝時間優先於 Sidecar；不再因讀取順序而採用低可信日期。
+        if is_photo and Image and not is_cloud:
+            candidates.extend(self._get_exif_date_candidates(path))
+
+        # Google Takeout Sidecar
         try:
             for jp in [path + ".json", os.path.splitext(path)[0] + ".json"]:
                 if os.path.exists(jp):
                     d = self._parse_json_date(jp)
-                    if d and self._is_valid(d, f"JSON:{os.path.basename(jp)}"): return d
+                    self._append_candidate(candidates, d, "Google Takeout JSON", ConfigConstants.DATE_CONFIDENCE["google_json"])
         except Exception:
             pass
 
-        # 2. EXIF (照片) - 僅在本機檔案且非雲端時執行，防止觸發 OneDrive 下載
-        if is_photo and Image and not is_cloud:
-            d = self._get_exif_date(path)
-            if d: return d
+        # 影片容器後設資料。ffprobe 只讀取標頭，不會重新編碼或修改原檔。
+        if not is_photo and not is_cloud:
+            d = self._get_video_metadata_date(path)
+            self._append_candidate(candidates, d, "影片容器拍攝日期", ConfigConstants.DATE_CONFIDENCE["video_container"])
 
-        # 2.5 Shell 屬性拍攝/媒體建立日期 (影片與照片) - 無論本機或雲端皆可透過 Shell 讀取 Property 12 (日期/Media Created)
+        # Windows Shell 後援，主要供 OneDrive 雲端預留檔案使用。
         if shell_reader:
             props = shell_reader.get_properties(path)
             if props.get('success') and props.get('date_taken'):
                 d = parse_shell_date(props.get('date_taken'))
-                if d and self._is_valid(d, "Shell-DateTaken"): return d
+                self._append_candidate(candidates, d, "Windows 媒體日期", ConfigConstants.DATE_CONFIDENCE["windows_media"])
 
-        # 3. 檔名 Regex
-        d = self._parse_filename_date(os.path.basename(path))
-        if d and self._is_valid(d, "Filename"): return d
+        # 檔名日期：程式產生的名稱不採用；只有相機原生命名保留較高可信度。
+        filename_candidate = self._get_filename_date_candidate(os.path.basename(path))
+        if filename_candidate:
+            self._append_candidate(candidates, *filename_candidate)
 
-        # 4. 找同名照片（影片/Live Photo 配對）
+        # 同名照片（影片／Live Photo 配對）
         if not is_photo:
             base = os.path.splitext(path)[0]
             for img_ext in ['.heic', '.HEIC', '.jpg', '.JPG', '.jpeg', '.JPEG']:
                 sibling = base + img_ext
                 if sibling != path and os.path.exists(sibling):
-                    d = self.get_date(sibling, is_photo=True, is_cloud=is_cloud, shell_reader=shell_reader)
-                    if d is not None: return d
+                    sibling_result = self.get_date_details(sibling, is_photo=True, is_cloud=is_cloud, shell_reader=shell_reader)
+                    sibling_date = sibling_result.get("date")
+                    sibling_confidence = int(sibling_result.get("confidence", 0))
+                    self._append_candidate(
+                        candidates,
+                        sibling_date,
+                        f"Live Photo 同名照片／{sibling_result.get('source', '未知')}",
+                        sibling_confidence,
+                    )
+                    break
+
+        # 最低可信回退：Windows 檔案建立時間，不代表原始拍攝時間。
+        try:
+            self._append_candidate(
+                candidates,
+                datetime.datetime.fromtimestamp(os.path.getctime(path)),
+                "Windows 檔案建立時間",
+                ConfigConstants.DATE_CONFIDENCE["file_created"],
+            )
+        except OSError:
+            pass
+
+        decision = self._select_date_candidate(candidates)
+        with self._cache_lock:
+            self._cache[cache_key] = decision
+        return decision
+
+    def _append_candidate(self, candidates: list[Dict[str, Any]], date_value: Optional[datetime.datetime], source: str, confidence: int):
+        if not date_value or not self._is_valid(date_value, source):
+            return
+        if any(item["date"] == date_value and item["source"] == source for item in candidates):
+            return
+        candidates.append({"date": date_value, "source": source, "confidence": confidence})
+
+    @staticmethod
+    def _select_date_candidate(candidates: list[Dict[str, Any]]) -> Dict[str, Any]:
+        if not candidates:
+            return {"date": None, "source": "無可用日期", "confidence": 0, "conflict": False, "candidates": []}
+        selected = max(candidates, key=lambda item: int(item["confidence"]))
+        high_confidence_years = {
+            item["date"].year
+            for item in candidates
+            if int(item["confidence"]) >= ConfigConstants.DATE_CONFLICT_MIN_CONFIDENCE
+        }
+        return {
+            "date": selected["date"],
+            "source": selected["source"],
+            "confidence": selected["confidence"],
+            "conflict": len(high_confidence_years) > 1,
+            "candidates": candidates,
+        }
+
+    def _get_video_metadata_date(self, path: str) -> Optional[datetime.datetime]:
+        """使用 ffprobe 讀取影片拍攝日期，優先採用含時區的 QuickTime 日期。"""
+        command = [
+            ConfigConstants.FFPROBE_PATH,
+            "-v", "error",
+            "-print_format", "json",
+            "-show_entries", "format_tags:stream_tags",
+            path,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=ConfigConstants.MEDIA_METADATA_TIMEOUT_SECONDS,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            if result.returncode != 0:
+                return None
+            return self._parse_ffprobe_metadata(json.loads(result.stdout))
+        except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+            return None
+
+    def _parse_ffprobe_metadata(self, metadata: Dict[str, Any]) -> Optional[datetime.datetime]:
+        """解析 ffprobe JSON；格式層級優先於串流層級，並統一轉為本機時間。"""
+        tag_groups = []
+        format_tags = metadata.get("format", {}).get("tags", {})
+        if isinstance(format_tags, dict):
+            tag_groups.append(format_tags)
+        for stream in metadata.get("streams", []):
+            tags = stream.get("tags", {}) if isinstance(stream, dict) else {}
+            if isinstance(tags, dict):
+                tag_groups.append(tags)
+
+        preferred_keys = (
+            "com.apple.quicktime.creationdate",
+            "date",
+            "creation_time",
+        )
+        for key in preferred_keys:
+            for tags in tag_groups:
+                value = next((v for k, v in tags.items() if k.lower() == key), None)
+                d = self._parse_iso_media_date(value)
+                if d and self._is_valid(d, f"Video:{key}"):
+                    return d
         return None
 
-    def _get_exif_date(self, path) -> Optional[datetime.datetime]:
-        if Image is None: return None
+    @staticmethod
+    def _parse_iso_media_date(value: Any) -> Optional[datetime.datetime]:
+        """解析 ISO 8601 媒體日期；有時區時轉為執行電腦的本機時間。"""
+        if not value or not isinstance(value, str):
+            return None
+        normalized = value.strip().replace("Z", "+00:00")
+        try:
+            parsed = datetime.datetime.fromisoformat(normalized)
+        except ValueError:
+            for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    parsed = datetime.datetime.strptime(normalized, fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                return None
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+
+    def _get_exif_date_candidates(self, path: str) -> list[Dict[str, Any]]:
+        candidates: list[Dict[str, Any]] = []
+        if Image is None: return candidates
         try:
             with Image.open(path) as img:
                 exif = img.getexif()
-                if not exif: return None
+                if not exif: return candidates
+                tag_rules = {
+                    36867: ("EXIF DateTimeOriginal", ConfigConstants.DATE_CONFIDENCE["exif_original"]),
+                    36868: ("EXIF DateTimeDigitized", ConfigConstants.DATE_CONFIDENCE["exif_digitized"]),
+                    306: ("EXIF DateTime", ConfigConstants.DATE_CONFIDENCE["exif_datetime"]),
+                }
                 # SubIFD (34665)
                 if 34665 in exif:
                     try:
                         sub = exif.get_ifd(34665)
-                        for tag in [36867, 36868, 306]:
+                        for tag, (source, confidence) in tag_rules.items():
                             dt_str = sub.get(tag)
                             if dt_str:
                                 d = self._parse_exif_str(dt_str)
-                                if d and self._is_valid(d, "Exif-SubIFD"): return d
+                                self._append_candidate(candidates, d, source, confidence)
                     except Exception:
                         pass
                 # IFD0
-                for tag in [36867, 306]:
+                for tag, (source, confidence) in tag_rules.items():
                     dt_str = exif.get(tag)
                     if dt_str:
                         d = self._parse_exif_str(dt_str)
-                        if d and self._is_valid(d, "Exif-IFD0"): return d
+                        self._append_candidate(candidates, d, source, confidence)
         except Exception:
             pass
-        return None
+        return candidates
 
     def _parse_exif_str(self, dt_str) -> Optional[datetime.datetime]:
         if not dt_str: return None
@@ -740,6 +910,37 @@ class DateParser:
                 pass
         return None
 
+    def _get_filename_date_candidate(self, filename: str) -> Optional[tuple[datetime.datetime, str, int]]:
+        """辨識檔名日期來源，阻止本程式重新命名後的錯誤日期自我強化。"""
+        stem = os.path.splitext(filename)[0]
+        generated_patterns = (
+            r'^\d{4}_\d{2}_\d{2}_\d{3,}(?:_\d+)*$',
+            r'^(?:DUP|Shot|Blur|NoDate|File|DateConflict|LowConfidence)(?:_|$)',
+        )
+        if any(re.match(pattern, stem, re.IGNORECASE) for pattern in generated_patterns):
+            return None
+
+        date_value = self._parse_filename_date(filename)
+        if not date_value:
+            return None
+
+        camera_prefix = re.match(
+            r'^(?:IMG|VID|PXL|DSC|DSCF|MVIMG|SAM|WP)[-_]?',
+            stem,
+            re.IGNORECASE,
+        )
+        if camera_prefix:
+            return (
+                date_value,
+                "相機原生檔名日期",
+                ConfigConstants.DATE_CONFIDENCE["camera_filename"],
+            )
+        return (
+            date_value,
+            "一般檔名日期",
+            ConfigConstants.DATE_CONFIDENCE["generic_filename"],
+        )
+
     def _is_valid(self, d: datetime.datetime, src: str = "") -> bool:
         if not d or d.year < 1900: return False
         if d > datetime.datetime.now() + datetime.timedelta(days=30):
@@ -757,6 +958,71 @@ class ImageOps:
     _cache_lock = threading.Lock()
     _api_lock = threading.Lock()
     _last_req_time = 0.0
+
+    @staticmethod
+    def score_excluded_screenshot(path: str, shell_props: Optional[Dict[str, Any]] = None) -> tuple[int, list[str]]:
+        """計算截圖／監視器畫面的排除分數，回傳分數與可稽核原因。"""
+        filename = os.path.basename(path).lower()
+        ext = os.path.splitext(filename)[1]
+        score = 0
+        reasons: list[str] = []
+
+        if any(keyword in filename for keyword in ConfigConstants.SCREENSHOT_KEYWORDS):
+            score += 7
+            reasons.append("截圖檔名(+7)")
+        if any(keyword in filename for keyword in ConfigConstants.SURVEILLANCE_KEYWORDS):
+            score += 7
+            reasons.append("監視器檔名(+7)")
+        if re.search(r'(?:^|[-_ ])(?:cam|ch|channel)[-_ ]?\d{1,3}(?:[-_ .]|$)', filename):
+            score += 7
+            reasons.append("監視器頻道編號(+7)")
+        if ext in {'.png', '.webp'}:
+            score += 1
+            reasons.append("常見截圖格式(+1)")
+
+        width = height = 0
+        has_camera_metadata = False
+        metadata_checked = False
+        if shell_props is not None:
+            metadata_checked = bool(shell_props.get('success'))
+            has_camera_metadata = bool(shell_props.get('model') or shell_props.get('maker'))
+            width_match = re.search(r'(\d+)', str(shell_props.get('width', '')))
+            height_match = re.search(r'(\d+)', str(shell_props.get('height', '')))
+            if width_match and height_match:
+                width, height = int(width_match.group(1)), int(height_match.group(1))
+        elif Image is not None:
+            try:
+                with Image.open(path) as img:
+                    width, height = img.size
+                    exif = img.getexif()
+                    metadata_checked = True
+                    camera_tags = {271, 272, 33434, 33437, 34855, 36867, 37377, 37378}
+                    has_camera_metadata = any(tag in exif for tag in camera_tags) if exif else False
+                    if exif and 34665 in exif:
+                        try:
+                            sub_ifd = exif.get_ifd(34665)
+                            has_camera_metadata = has_camera_metadata or any(tag in sub_ifd for tag in camera_tags)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        if metadata_checked:
+            if has_camera_metadata:
+                score -= 5
+                reasons.append("具有相機 EXIF(-5)")
+            else:
+                score += 2
+                reasons.append("缺少相機 EXIF(+2)")
+        if width > 0 and height > 0:
+            if (width, height) in ConfigConstants.COMMON_SCREEN_SIZES:
+                score += 2
+                reasons.append("常見螢幕尺寸(+2)")
+            if height > width and height / width >= 1.6 and width <= 1440:
+                score += 3
+                reasons.append("手機直向螢幕比例(+3)")
+
+        return max(0, score), reasons
 
     @staticmethod
     def _init_geo():
@@ -897,11 +1163,13 @@ class Processor:
         self.history_db  = {}
         self.dry_run_paths = set()
         self.preview_log   = []
+        self.date_audit_log: list[list[Any]] = []
         self.stats_lock   = threading.Lock()
         self.history_lock = threading.Lock()
         self.naming_lock  = threading.Lock()
         self.dedup_lock   = threading.Lock()
         self.preview_lock = threading.Lock()
+        self.date_audit_lock = threading.Lock()
         
         # 自動偵測 OneDrive 路徑以強制開啟保護
         self.onedrive_protect = self.config.get('onedrive_protect', False)
@@ -1026,6 +1294,7 @@ class Processor:
                     'processed_size': total_size, 'total_size': total_size, 'speed': 0, 'eta': 0})
 
             if not self.config.get('dry_run'): self._save_history()
+            if self.config['mode'] != 'cleanup': self._export_date_audit()
 
             if not self.stop_event.is_set():
                 if self.config['mode'] == 'cleanup':
@@ -1171,6 +1440,37 @@ class Processor:
         except Exception as e:
             self.logger.error(f"❌ 無法寫入預覽報告: {e}")
 
+    def _record_date_audit(self, path: str, details: Dict[str, Any]):
+        candidates_text = " | ".join(
+            f"{item['source']}={item['date'].isoformat(sep=' ')}({item['confidence']})"
+            for item in details.get("candidates", [])
+        )
+        selected_date = details.get("date")
+        row = [
+            path,
+            selected_date.isoformat(sep=" ") if selected_date else "",
+            details.get("source", ""),
+            details.get("confidence", 0),
+            "是" if details.get("conflict") else "否",
+            candidates_text,
+        ]
+        with self.date_audit_lock:
+            self.date_audit_log.append(row)
+
+    def _export_date_audit(self):
+        if not self.date_audit_log:
+            return
+        try:
+            report_path = os.path.join(os.getcwd(), "date_audit.csv")
+            with open(report_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow(["來源檔案", "採用日期", "日期來源", "可信度", "高可信年份衝突", "全部候選日期"])
+                with self.date_audit_lock:
+                    writer.writerows(self.date_audit_log)
+            self.logger.info(f"✅ 日期稽核報告: {report_path}")
+        except Exception as e:
+            self.logger.error(f"❌ 無法寫入日期稽核報告: {e}")
+
     def _index_destination(self, dst_root):
         if not os.path.exists(dst_root): return
         class _Ctx: n = 0
@@ -1199,6 +1499,8 @@ class Processor:
         cb_status = self.status_callback
         for r, d, f in os.walk(root):
             if self.stop_event.is_set(): break
+            # 從父資料夾重跑時，不再次處理已排除或待人工複查的檔案。
+            d[:] = [name for name in d if name not in ConfigConstants.MANAGED_SCAN_EXCLUDED_DIRS]
             for file in f:
                 fp = str(os.path.join(r, file))
                 files_list.append(fp)
@@ -1307,54 +1609,62 @@ class Processor:
         # ---------------- 一般整理模式 (Copy/Move) ----------------
         if not (is_photo or is_video): return
 
-        # 0. 提前解析日期 (用於分類與隔離檔案命名)
-        date_obj = self.date_parser.get_date(file_path, is_photo, is_cloud, self.shell_reader)
-        if not date_obj:
-            try:
-                ctime = os.path.getctime(file_path)
-                date_obj = datetime.datetime.fromtimestamp(ctime)
-            except Exception:
-                pass
+        # 0. 收集所有候選日期，依可信度決策並寫入稽核資料。
+        date_details = self.date_parser.get_date_details(file_path, is_photo, is_cloud, self.shell_reader)
+        date_obj = date_details.get("date")
+        self._record_date_audit(file_path, date_details)
 
-        # 1. 螢幕截圖隔離
-        is_screenshot = False
-        if any(kw in filename.lower() for kw in ConfigConstants.SCREENSHOT_KEYWORDS):
-            is_screenshot = True
-        elif self.config.get('smart_screenshot', False) and is_photo:
+        # 1. 截圖／監視器畫面採分數制；達門檻才排除，否則照年月正常歸檔。
+        if self.config.get('smart_screenshot', False) and is_photo:
+            shell_props = None
             if is_cloud and self.shell_reader:
-                props = self.shell_reader.get_properties(file_path)
-                if props.get('success'):
-                    width_str = props.get('width', '')
-                    height_str = props.get('height', '')
-                    # 1. 檔名拍照命名排除
-                    lower_name = filename.lower()
-                    ext = os.path.splitext(lower_name)[1]
-                    if lower_name.startswith(('img', 'dsc', 'c360', 'mvimg')) and ext in {'.jpg', '.jpeg', '.heic', '.heif'}:
-                        pass
-                    else:
-                        model = props.get('model', '')
-                        maker = props.get('maker', '')
-                        m_w = re.search(r'(\d+)', width_str)
-                        m_h = re.search(r'(\d+)', height_str)
-                        if m_w and m_h:
-                            w = int(m_w.group(1))
-                            h = int(m_h.group(1))
-                            if w > 0 and h > 0:
-                                strict_mode = self.config.get('screenshot_strict_mode', True)
-                                if strict_mode:
-                                    if h > w and (h / w) >= 1.6 and not model and not maker:
-                                        if w <= 1440:
-                                            is_screenshot = True
-                                else:
-                                    if not model and not maker:
-                                        is_screenshot = True
-            elif not is_cloud:
-                strict_mode = self.config.get('screenshot_strict_mode', True)
-                if is_screenshot_by_exif_and_ratio(file_path, strict_mode):
-                    is_screenshot = True
+                shell_props = self.shell_reader.get_properties(file_path)
+            exclusion_score, exclusion_reasons = ImageOps.score_excluded_screenshot(file_path, shell_props)
+            if exclusion_score >= ConfigConstants.EXCLUSION_SCORE_THRESHOLD:
+                reason_text = "、".join(exclusion_reasons)
+                self.logger.info(f"[排除] {filename}：{exclusion_score} 分（{reason_text}）")
+                self._transfer_to(
+                    file_path,
+                    dst_root,
+                    os.path.join("_Excluded", "Screenshots"),
+                    filename,
+                    f"排除截圖 {exclusion_score}分",
+                    date_obj,
+                )
+                return
 
-        if is_screenshot:
-            self._transfer_to(file_path, dst_root, "_Screenshots", filename, "截圖", date_obj)
+        # 高可信來源年份不一致時停止自動歸檔，交由人工確認。
+        if date_details.get("conflict"):
+            candidate_summary = "、".join(
+                f"{item['source']}={item['date'].year}"
+                for item in date_details.get("candidates", [])
+                if int(item.get("confidence", 0)) >= ConfigConstants.DATE_CONFLICT_MIN_CONFIDENCE
+            )
+            self.logger.warn(f"[日期衝突] {filename}：{candidate_summary}")
+            self._transfer_to(
+                file_path,
+                dst_root,
+                os.path.join("_Review", "DateConflict"),
+                filename,
+                "日期衝突",
+                date_obj,
+            )
+            return
+
+        # 缺乏可靠日期時保留原檔並隔離複查，避免以複製時間或舊錯誤檔名硬歸檔。
+        if int(date_details.get("confidence", 0)) < ConfigConstants.DATE_LOW_CONFIDENCE_THRESHOLD:
+            self.logger.warn(
+                f"[低可信日期] {filename}：{date_details.get('source')} "
+                f"({date_details.get('confidence', 0)} 分)"
+            )
+            self._transfer_to(
+                file_path,
+                dst_root,
+                os.path.join("_Review", "LowConfidenceDate"),
+                filename,
+                "低可信日期",
+                date_obj,
+            )
             return
 
         # 2. 重複檔案去重 (將 is_cloud 傳入 check_dup)
@@ -1431,6 +1741,9 @@ class Processor:
                 prefix_map = {
                     "_Duplicates": "DUP",
                     "_Screenshots": "Shot",
+                    os.path.join("_Excluded", "Screenshots"): "Shot",
+                    os.path.join("_Review", "DateConflict"): "DateConflict",
+                    os.path.join("_Review", "LowConfidenceDate"): "LowConfidence",
                     "_Blurry": "Blur",
                     "No_Date": "NoDate"
                 }
@@ -1445,6 +1758,7 @@ class Processor:
         self._execute(src, t, tag)
 
     def _execute(self, src, dst, tag):
+        sidecar_pairs = self._get_sidecar_pairs(src, dst)
         if os.path.abspath(src) == os.path.abspath(dst):
             self.logger.info(f"[{tag}] 已在正確位置: {os.path.basename(src)}")
             with self.stats_lock:
@@ -1461,6 +1775,7 @@ class Processor:
                 self.stats['processed'] += 1
                 try: self.stats['processed_size'] += os.path.getsize(src)
                 except Exception: pass
+            self._transfer_sidecars(sidecar_pairs, tag)
             return
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         if self.config['mode'] in ('move', 'cleanup'):
@@ -1494,7 +1809,77 @@ class Processor:
             self.stats['processed'] += 1
             try: self.stats['processed_size'] += os.path.getsize(dst)
             except Exception: pass
+        self._transfer_sidecars(sidecar_pairs, tag)
         if self.config['resume_enabled']: self._hist_update(src, dst)
+
+    def _get_sidecar_pairs(self, src: str, dst: str) -> list[tuple[str, str]]:
+        """取得明確配對的 JSON Sidecar，並保留原本的命名慣例。"""
+        if not self.config.get('sidecar_enabled', True):
+            return []
+        ext = os.path.splitext(src)[1].lower()
+        if ext not in ConfigConstants.EXT_PHOTOS and ext not in ConfigConstants.EXT_VIDEOS:
+            return []
+
+        pairs: list[tuple[str, str]] = []
+        full_name_sidecar = src + ".json"
+        if os.path.isfile(full_name_sidecar):
+            pairs.append((full_name_sidecar, dst + ".json"))
+
+        stem_src = os.path.splitext(src)[0] + ".json"
+        stem_dst = os.path.splitext(dst)[0] + ".json"
+        if stem_src != full_name_sidecar and os.path.isfile(stem_src):
+            # Live Photo 共用檔名時由照片擁有 stem.json，避免影片與照片競爭同一 Sidecar。
+            has_sibling_photo = ext in ConfigConstants.EXT_VIDEOS and any(
+                os.path.isfile(os.path.splitext(src)[0] + photo_ext)
+                or os.path.isfile(os.path.splitext(src)[0] + photo_ext.upper())
+                for photo_ext in ConfigConstants.EXT_PHOTOS
+            )
+            if not has_sibling_photo:
+                pairs.append((stem_src, stem_dst))
+        return pairs
+
+    def _transfer_sidecars(self, pairs: list[tuple[str, str]], tag: str):
+        for sidecar_src, intended_dst in pairs:
+            try:
+                with self.naming_lock:
+                    reserved = self.dry_run_paths if self.config.get('dry_run') else None
+                    sidecar_dst = FSUtils.get_unique_path(intended_dst, reserved)
+                    if self.config.get('dry_run'):
+                        self.dry_run_paths.add(sidecar_dst)
+
+                if self.config.get('dry_run'):
+                    with self.preview_lock:
+                        self.preview_log.append([
+                            sidecar_src,
+                            f"{self.config['mode']} (Sidecar JSON)",
+                            sidecar_dst,
+                            f"跟隨媒體：{tag}",
+                        ])
+                    self.logger.info(
+                        f"[預覽-Sidecar] {os.path.basename(sidecar_src)} → {os.path.basename(sidecar_dst)}"
+                    )
+                    continue
+
+                os.makedirs(os.path.dirname(sidecar_dst), exist_ok=True)
+                if self.config['mode'] in ('move', 'cleanup'):
+                    src_drive = os.path.splitdrive(sidecar_src)[0].upper()
+                    dst_drive = os.path.splitdrive(sidecar_dst)[0].upper()
+                    if src_drive and src_drive == dst_drive:
+                        os.replace(sidecar_src, sidecar_dst)
+                    else:
+                        shutil.move(sidecar_src, sidecar_dst)
+                    action = "移動"
+                else:
+                    shutil.copy2(sidecar_src, sidecar_dst)
+                    action = "複製"
+                self.logger.info(
+                    f"[Sidecar] {action}: {os.path.basename(sidecar_src)} → {os.path.basename(sidecar_dst)}"
+                )
+            except Exception as e:
+                with self.stats_lock:
+                    self.stats['errors'] += 1
+                    self.stats['failed_files'].append(f"{sidecar_src}: {e}")
+                self.logger.error(f"❌ Sidecar JSON 處理失敗，來源檔已保留: {sidecar_src} - {e}")
 
     def _check_dup(self, path, f_size, is_cloud=False):
         # 雲端隨選檔案降級去重邏輯：100% 避免計算雜湊觸發下載
@@ -1705,7 +2090,8 @@ class WebBridge:
             "dest_dir": self._app_config.dest_dir,
             "skip_existing": bool(self._app_config.skip_existing),
             "folder_pattern": getattr(self._app_config, 'folder_pattern', 'ym'),
-            "rename_mode": getattr(self._app_config, 'rename_mode', 'date_seq')
+            "rename_mode": getattr(self._app_config, 'rename_mode', 'date_seq'),
+            "sidecar_enabled": getattr(self._app_config, 'sidecar_enabled', True),
         }
 
     def get_updates(self):
@@ -1774,6 +2160,7 @@ class WebBridge:
         self._app_config.skip_existing = config_dict.get('skip_existing', False)
         self._app_config.folder_pattern = config_dict.get('folder_pattern', 'ym')
         self._app_config.rename_mode = config_dict.get('rename_mode', 'date_seq')
+        self._app_config.sidecar_enabled = config_dict.get('sidecar_enabled', True)
         self._app_config.save()
 
         cfg = {
@@ -1791,7 +2178,8 @@ class WebBridge:
             'smart_screenshot': config_dict.get('smart_screenshot', True),
             'screenshot_strict_mode': config_dict.get('screenshot_strict_mode', True),
             'onedrive_protect': config_dict.get('onedrive_protect', True),
-            'folder_pattern': config_dict.get('folder_pattern', 'ym')
+            'folder_pattern': config_dict.get('folder_pattern', 'ym'),
+            'sidecar_enabled': config_dict.get('sidecar_enabled', True),
         }
 
         self._processor = Processor(cfg, progress_callback=self._on_progress, status_callback=self._on_status)

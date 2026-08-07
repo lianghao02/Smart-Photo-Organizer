@@ -26,6 +26,7 @@ Thumbs.db
 
 # Environment
 .env
+date_audit.csv
 .venv
 env/
 venv/

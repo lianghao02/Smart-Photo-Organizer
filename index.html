@@ -454,7 +454,7 @@
       <!-- Col 1: Screenshot -->
       <div class="core-column">
         <label class="checkbox-label">
-          <input type="checkbox" id="smartScreenshot" checked onchange="onSmartScreenshotChange()"> 📱 自動隔離螢幕截圖 (移至 _Screenshots)
+          <input type="checkbox" id="smartScreenshot" checked onchange="onSmartScreenshotChange()"> 📱 截圖／監視器評分排除（≥ 7 分移至 _Excluded/Screenshots）
         </label>
         <label class="checkbox-label sub-option">
           <input type="checkbox" id="screenshotStrict" checked> 僅抓取手機直式截圖 (避免誤判網路梗圖)
@@ -493,6 +493,9 @@
         </label>
         <label class="checkbox-label">
           <input type="checkbox" id="dryRun"> 🧪 模擬測試模式 (不搬移任何檔案，僅產出預覽報表)
+        </label>
+        <label class="checkbox-label" style="grid-column: span 2;">
+          <input type="checkbox" id="sidecarEnabled" checked> 🧾 一併處理照片／影片 Sidecar JSON（保留拍攝時間與 GPS 後設資料）
         </label>
         <label class="checkbox-label" style="grid-column: span 2;">
           <input type="checkbox" id="blurCheck"> 🔍 自動挑出模糊照片 (隔離至 _Blurry 資料夾)
@@ -567,6 +570,7 @@
           const r = document.querySelector(`input[name="renameMode"][value="${config.rename_mode}"]`);
           if (r) r.checked = true;
         }
+        document.getElementById('sidecarEnabled').checked = config.sidecar_enabled !== false;
       }
     });
 
@@ -647,7 +651,8 @@
       smart_screenshot: document.getElementById('smartScreenshot').checked,
       screenshot_strict_mode: document.getElementById('screenshotStrict').checked,
       onedrive_protect: document.getElementById('onedriveProtect').checked,
-      folder_pattern: document.getElementById('folderPattern').value
+      folder_pattern: document.getElementById('folderPattern').value,
+      sidecar_enabled: document.getElementById('sidecarEnabled').checked
     };
   }
 

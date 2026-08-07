@@ -1,5 +1,17 @@
 # 📸 智慧相片自動分類助手 Smart-Photo-Organizer (v2.9 Pro Web)
 
+> 影片日期會優先讀取 MP4／MOV 等容器內的拍攝後設資料（QuickTime `creationdate`、`creation_time`），再依 Windows 媒體建立日期、檔名與檔案建立時間回退。若要精準解析影片，請安裝 FFmpeg 並確保 `ffprobe` 可由命令列執行；也可用 `FFPROBE_PATH` 環境變數指定完整路徑。
+
+> 啟用智慧截圖辨識後，系統會依檔名、相機 EXIF、螢幕尺寸與畫面比例計分。分數達 **7 分**的螢幕截圖或監視器畫面會移至 `_Excluded/Screenshots`；低於 7 分則維持一般年月歸檔。
+
+> 日期判斷會收集 EXIF、Google Takeout JSON、影片容器、Windows 媒體屬性、檔名與檔案建立時間，再依可信度選擇。若兩個高可信來源的年份不同，檔案會移至 `_Review/DateConflict`，並產生 `date_audit.csv` 供人工稽核。
+
+> 程式產生的日期流水號、`DUP_*`、`Shot_*` 等檔名不會被當成日期證據；最高日期可信度低於 50 分時，檔案會移至 `_Review/LowConfidenceDate`，避免錯誤日期在重跑後自我強化。
+
+> 從父資料夾再次執行時，掃描器會略過 `_Excluded` 與 `_Review`，避免已隔離檔案被重複處理。
+
+> 「一併處理 Sidecar JSON」預設開啟。Copy 會複製、Move 會移動、DRY_RUN 會列入預覽；媒體重新命名時，`照片.jpg.json` 與 `照片.json` 會同步更新名稱。孤立 JSON 保留原處。
+
 [![Version](https://img.shields.io/badge/version-v2.9-blue.svg)](https://github.com/lianghao02/Smart-Photo-Organizer)
 [![EXIF](https://img.shields.io/badge/Library-exif--js-yellow.svg)](https://github.com/exif-js/exif-js)
 
