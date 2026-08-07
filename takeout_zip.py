@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - ZIP 掃描、ZipInfo 唯讀讀取與資訊安全防護模組 (v1.3 P0 終極修補版)
+Google Takeout ZIP 匯入引擎 - ZIP 掃描、ZipInfo 唯讀讀取與單檔按需串流解壓模組 (v2.0 Phase 2 版)
 """
 
 import os
+import zlib
 import zipfile
 import hashlib
 from typing import Tuple, Optional, Dict, Any, List
@@ -14,6 +15,11 @@ class ZipSecurityError(Exception):
     pass
 
 
+class ZipExtractionError(Exception):
+    """ZIP 成員解壓或完整性校驗失敗例外"""
+    pass
+
+
 class TakeoutZipScanner:
     # 限制條件 (Configurable Safety Thresholds)
     MAX_JSON_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -21,6 +27,7 @@ class TakeoutZipScanner:
     MAX_MEMBER_COUNT_PER_ZIP = 1_000_000    # 1,000,000 單 ZIP 成員上限
     MAX_JOB_TOTAL_MEMBERS = 1_000_000       # 1,000,000 全任務總成員上限
     MAX_ZIP_COUNT = 500                    # 500 ZIP 檔上限
+    CHUNK_SIZE = 64 * 1024                 # 64 KB 串流區塊
 
     # 支援的解壓方法
     SUPPORTED_COMPRESS_TYPES = {
@@ -129,3 +136,53 @@ class TakeoutZipScanner:
                 members.append(member_item)
 
         return members
+
+    @classmethod
+    def extract_member_stream(cls, zip_path: str, member_name: str, part_path: str) -> Dict[str, Any]:
+        """
+        單一成員按需串流解壓至 part_path
+        邊寫入邊同步計算 CRC32 與 SHA-256
+        解壓完成後校驗與 ZipInfo 一致性，出錯自動清理不完整 part 檔。
+        """
+        os.makedirs(os.path.dirname(os.path.abspath(part_path)), exist_ok=True)
+        sha256 = hashlib.sha256()
+        crc32_val = 0
+        bytes_written = 0
+
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                try:
+                    info = zf.getinfo(member_name)
+                except KeyError:
+                    raise ZipExtractionError(f"ZIP 內部找不到成員: {member_name}")
+
+                with zf.open(info, 'r') as source_stream:
+                    with open(part_path, 'wb') as target_file:
+                        while True:
+                            chunk = source_stream.read(cls.CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            target_file.write(chunk)
+                            sha256.update(chunk)
+                            crc32_val = zlib.crc32(chunk, crc32_val)
+                            bytes_written += len(chunk)
+
+                # 校驗輸出容量與 CRC32
+                computed_crc = crc32_val & 0xFFFFFFFF
+                if bytes_written != info.file_size:
+                    raise ZipExtractionError(f"解壓容量不合 (實際 {bytes_written} vs 宣告 {info.file_size}): {member_name}")
+                if computed_crc != (info.CRC & 0xFFFFFFFF):
+                    raise ZipExtractionError(f"CRC32 校驗失敗 (實際 0x{computed_crc:08X} vs 宣告 0x{info.CRC & 0xFFFFFFFF:08X}): {member_name}")
+
+            return {
+                "sha256": sha256.hexdigest(),
+                "bytes_written": bytes_written,
+                "crc32": computed_crc
+            }
+
+        except Exception as e:
+            # 發生例外時，確保刪除殘留之不完整 .part 暫存檔
+            if os.path.exists(part_path):
+                try: os.remove(part_path)
+                except OSError: pass
+            raise ZipExtractionError(f"串流解壓失敗 [{member_name}]: {e}")
