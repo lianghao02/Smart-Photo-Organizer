@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 2 單元測試
-驗證按需單檔串流解壓、CRC32/SHA-256 校驗與崩潰恢復引擎 (Crash Recovery Engine)
+Google Takeout ZIP 匯入引擎 Phase 2.1 阻斷修補單元測試
+驗證按 member_index 串流解壓、xb 排他模式、邊界安全防護與崩潰恢復引擎 (Crash Recovery Engine)
 """
 
 import os
@@ -28,34 +28,71 @@ class TestTakeoutPhase2(unittest.TestCase):
         self.dst_dir = os.path.join(self.test_dir, "output")
         os.makedirs(self.dst_dir, exist_ok=True)
 
-        self.sample_bytes = b"Hello Google Takeout Stream Integrity Test " * 100
+        self.sample_bytes1 = b"FIRST MEMBER CONTENT " * 50
+        self.sample_bytes2 = b"SECOND MEMBER CONTENT " * 50
+
+        # 建立包含同名媒體檔 (same.jpg) 的 ZIP
         with zipfile.ZipFile(self.zip_path, 'w') as zf:
-            zf.writestr("Takeout/Google Photos/Album2020/test_photo.jpg", self.sample_bytes)
+            zf.writestr("Album1/same.jpg", self.sample_bytes1)
+            zf.writestr("Album2/same.jpg", self.sample_bytes2)
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_single_item_stream_extraction_and_integrity(self):
-        """驗證單一成員串流解壓至 .part 暫存檔，且 SHA-256 與 CRC32 計算正確"""
-        part_path = os.path.join(self.dst_dir, "_ImportTemp", "job_test", "test_photo.part")
-        res = takeout_zip.TakeoutZipScanner.extract_member_stream(
-            self.zip_path, "Takeout/Google Photos/Album2020/test_photo.jpg", part_path
+    def test_single_item_stream_extraction_by_member_index(self):
+        """驗證依 member_index 精準解壓，避免 ZIP 內部同名檔檔名混淆"""
+        part_path1 = os.path.join(self.dst_dir, "_ImportTemp", "job_test", "same1.part")
+        res1 = takeout_zip.TakeoutZipScanner.extract_member_stream(
+            self.zip_path, member_index=0, part_path=part_path1
         )
+        self.assertTrue(os.path.exists(part_path1))
+        with open(part_path1, 'rb') as f:
+            self.assertEqual(f.read(), self.sample_bytes1)
 
-        self.assertTrue(os.path.exists(part_path))
-        self.assertEqual(res['bytes_written'], len(self.sample_bytes))
+        part_path2 = os.path.join(self.dst_dir, "_ImportTemp", "job_test", "same2.part")
+        res2 = takeout_zip.TakeoutZipScanner.extract_member_stream(
+            self.zip_path, member_index=1, part_path=part_path2
+        )
+        self.assertTrue(os.path.exists(part_path2))
+        with open(part_path2, 'rb') as f:
+            self.assertEqual(f.read(), self.sample_bytes2)
 
-        # 驗證產出的 .part 檔案內容一致性
-        with open(part_path, 'rb') as f:
-            written_data = f.read()
-        self.assertEqual(written_data, self.sample_bytes)
+    def test_boundary_path_security_prevents_unauthorized_deletion(self):
+        """驗證崩潰恢復引擎絕不刪除 _ImportTemp 邊界外或非 .part 的敏感檔案"""
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "boundary_test.db")
+        state_mgr = import_state.TakeoutStateManager(db_path)
+        job_id = "job_boundary_001"
+        state_mgr.create_job(job_id, import_state.JobType.IMPORT, self.test_dir, self.dst_dir)
+        arc_id = state_mgr.record_archive(job_id, self.zip_path, 100, 1.0, "fp1")
 
-    def test_crash_recovery_matrix_handling(self):
-        """驗證崩潰恢復矩陣處置：EXTRACTING 刪除 dirty part、VERIFIED 重用 part、DESTINATION_RESERVED 衝突防護"""
-        db_path = os.path.join(self.dst_dir, "_ImportTemp", "recovery_test.db")
+        # 建立暫存目錄外的敏感檔案
+        sensitive_file = os.path.join(self.test_dir, "important_user_data.txt")
+        with open(sensitive_file, 'w', encoding='utf-8') as f:
+            f.write("DO NOT DELETE THIS")
+
+        m = {
+            "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp1",
+            "member_index": 0, "member_name": "photo.jpg", "normalized_path": "photo.jpg",
+            "filename": "photo.jpg", "member_crc": 100, "uncompressed_size": 200,
+            "compressed_size": 150, "is_media": True, "is_json": False,
+            "status": import_state.TakeoutState.EXTRACTING, "part_path": sensitive_file
+        }
+        mid = state_mgr.register_member(m)
+        state_mgr.update_member_status(mid, import_state.TakeoutState.EXTRACTING, part_path=sensitive_file)
+
+        # 執行復原引擎
+        pending = state_mgr.recover_and_get_pending_members(job_id)
+
+        # 驗證敏感檔案被安全保護未被刪除
+        self.assertTrue(os.path.exists(sensitive_file))
+
+    def test_crash_recovery_matrix_handling_with_fk(self):
+        """驗證外鍵完全寫入條件下的崩潰恢復矩陣處置"""
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "recovery_fk_test.db")
         state_mgr = import_state.TakeoutStateManager(db_path)
         job_id = "job_recovery_001"
         state_mgr.create_job(job_id, import_state.JobType.IMPORT, self.test_dir, self.dst_dir)
+        arc_id = state_mgr.record_archive(job_id, self.zip_path, 100, 1.0, "fp1")
 
         # 1. 模擬 EXTRACTING 狀態 (包含不完整 .part)
         dirty_part = os.path.join(self.dst_dir, "_ImportTemp", job_id, "dirty.part")
@@ -64,7 +101,7 @@ class TestTakeoutPhase2(unittest.TestCase):
             f.write(b"partial dirty bytes")
 
         m1 = {
-            "job_id": job_id, "archive_id": 1, "archive_fingerprint": "fp1",
+            "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp1",
             "member_index": 0, "member_name": "photo1.jpg", "normalized_path": "photo1.jpg",
             "filename": "photo1.jpg", "member_crc": 100, "uncompressed_size": 200,
             "compressed_size": 150, "is_media": True, "is_json": False,
@@ -87,7 +124,7 @@ class TestTakeoutPhase2(unittest.TestCase):
             f.write(b"valid complete bytes")
 
         m2 = {
-            "job_id": job_id, "archive_id": 1, "archive_fingerprint": "fp1",
+            "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp1",
             "member_index": 1, "member_name": "photo2.jpg", "normalized_path": "photo2.jpg",
             "filename": "photo2.jpg", "member_crc": 200, "uncompressed_size": 20,
             "compressed_size": 15, "is_media": True, "is_json": False,

@@ -2280,23 +2280,82 @@ class WebBridge:
             indexer = takeout_index.TakeoutIndexer(state_mgr)
             report = indexer.build_cross_zip_index(job_id)
 
-            final_status = import_state.TakeoutState.COMPLETED_WITH_ERRORS if archive_errors > 0 else import_state.TakeoutState.COMPLETED
+            # ============================================================
+            # Phase 2：單檔按需串流解壓與完整性校驗 (Single-Item Extraction Pipeline)
+            # ============================================================
+            self._on_log("⚡ 啟動 Phase 2 按需單檔串流解壓與 CRC32/SHA-256 品質校驗...", "info")
+            pending_members = state_mgr.recover_and_get_pending_members(job_id)
+            extracted_count = 0
+            extract_errors = 0
+
+            # 建立按 archive_id 劃分的快取映射
+            archive_map = {}
+            for pm in pending_members:
+                arc_id = pm['archive_id']
+                if arc_id not in archive_map:
+                    arc_info = state_mgr.get_archive(arc_id)
+                    archive_map[arc_id] = arc_info['archive_path'] if arc_info else None
+
+            import uuid
+            for idx, m in enumerate(pending_members, 1):
+                if getattr(self, '_stop_event', None) and self._stop_event.is_set():
+                    state_mgr.update_job_status(job_id, import_state.TakeoutState.CANCELLED)
+                    self._on_log("⚠️ 使用者取消匯入任務。", "warning")
+                    self._on_status("paused")
+                    return
+
+                mid = m['member_id']
+                archive_path = archive_map.get(m['archive_id'])
+                if not archive_path or not os.path.exists(archive_path):
+                    state_mgr.update_member_status(mid, import_state.TakeoutState.FAILED, error_msg="封存檔路徑不存在")
+                    extract_errors += 1
+                    continue
+
+                # 產生獨立 UUID 的 .part 暫存路徑
+                part_filename = f"{uuid.uuid4().hex}.part"
+                part_path = os.path.join(dst, "_ImportTemp", job_id, part_filename)
+
+                try:
+                    state_mgr.update_member_status(mid, import_state.TakeoutState.EXTRACTING, part_path=part_path)
+                    
+                    res = takeout_zip.TakeoutZipScanner.extract_member_stream(
+                        zip_path=archive_path,
+                        member_index=m['member_index'],
+                        part_path=part_path,
+                        cancel_check_func=lambda: getattr(self, '_stop_event', None) and self._stop_event.is_set()
+                    )
+
+                    state_mgr.update_member_status(
+                        mid,
+                        import_state.TakeoutState.VERIFIED,
+                        part_path=part_path,
+                        sha256=res['sha256']
+                    )
+                    extracted_count += 1
+
+                    if idx % 50 == 0 or idx == len(pending_members):
+                        self._on_log(f" └─ 串流解壓推進中 [{idx}/{len(pending_members)}] 成功: {extracted_count} 個", "info")
+
+                except Exception as e:
+                    extract_errors += 1
+                    state_mgr.update_member_status(mid, import_state.TakeoutState.FAILED, error_msg=str(e))
+                    self._on_log(f"⚠️ 成員串流解壓失敗 [{m['filename']}]: {e}", "warning")
+
+            final_status = import_state.TakeoutState.COMPLETED_WITH_ERRORS if (archive_errors > 0 or extract_errors > 0) else import_state.TakeoutState.COMPLETED
             state_mgr.update_job_status(job_id, final_status)
 
             self._on_log("=" * 60, "info")
-            self._on_log(f"📊 【ZIP 快速盤點報告】 (Job ID: {job_id})", "info")
-            self._on_log(f"  • 媒體檔案數：{report['media_count']:,} 個", "info")
-            self._on_log(f"  • Sidecar JSON 數：{report['json_count']:,} 個", "info")
+            self._on_log(f"📊 【ZIP 解壓與校驗完成報告】 (Job ID: {job_id})", "info")
+            self._on_log(f"  • 媒體檔案總數：{report['media_count']:,} 個", "info")
+            self._on_log(f"  • 成功解壓校驗 (VERIFIED)：{extracted_count:,} 個", "info")
             self._on_log(f"  • Sidecar 精準配對數：{report['matched_pair_count']:,} 組", "info")
             self._on_log(f"  • 宣告解壓後總容量：{report['total_uncompressed_gb']} GB", "info")
-            if archive_errors > 0:
-                self._on_log(f"  ⚠️ 失敗/損毀的 ZIP 封存檔：{archive_errors} 個", "warning")
-            if report['security_rejected_count'] > 0:
-                self._on_log(f"  ⚠️ 安全攔截危險/異常成員：{report['security_rejected_count']} 個", "warning")
+            if extract_errors > 0:
+                self._on_log(f"  ⚠️ 解壓失敗/損毀成員：{extract_errors} 個", "warning")
             self._on_log("=" * 60, "info")
-            self._on_log(f"=== ✅ Phase 1 快速盤點完成！狀態: {final_status} ===", "info")
+            self._on_log(f"=== ✅ Phase 2 單檔按需串流解壓完成！狀態: {final_status} ===", "info")
 
-            msg = f"Phase 1 盤點完成 ({final_status})！\n媒體數: {report['media_count']}\nJSON 數: {report['json_count']}\n配對數: {report['matched_pair_count']}\n解壓容量: {report['total_uncompressed_gb']} GB"
+            msg = f"Phase 2 解壓完成 ({final_status})！\n成功解壓: {extracted_count} 個\n失敗成員: {extract_errors} 個"
             with self._queue_lock:
                 self._process_finished_msg = msg
             self._on_status("paused")

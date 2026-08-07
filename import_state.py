@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v2.0 Phase 2 崩潰矩陣與續傳版)
-提供符合 ACID 的批次狀態推進、崩潰恢復矩陣處理、FK 安全 Migration 與續傳機制。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v2.1 Phase 2.1 邊界安全與 SHA-256 版)
+提供符合 ACID 的批次狀態推進、邊界防禦之崩潰恢復矩陣處理、FK 安全 Migration 與續傳機制。
 """
 
 import os
@@ -209,6 +209,13 @@ class TakeoutStateManager:
             )
         return job_id
 
+    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
     def update_job_status(self, job_id: str, status: str):
         now = datetime.datetime.now().isoformat()
         with self._get_conn() as conn:
@@ -233,6 +240,13 @@ class TakeoutStateManager:
                 "UPDATE archives SET status = ?, error_msg = ? WHERE archive_id = ?",
                 (status, error_msg, archive_id)
             )
+
+    def get_archive(self, archive_id: int) -> Optional[Dict[str, Any]]:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM archives WHERE archive_id = ?", (archive_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
 
     def register_members_batch(self, members_data: List[Dict[str, Any]]):
         """採用安全 UPSERT (ON CONFLICT DO UPDATE) 替代 INSERT OR REPLACE，保護 member_id 不變"""
@@ -318,10 +332,34 @@ class TakeoutStateManager:
             cursor.execute("SELECT * FROM members WHERE job_id = ? AND status = ?", (job_id, status))
             return [dict(row) for row in cursor.fetchall()]
 
+    def _is_safe_part_path(self, job_id: str, part_path: str) -> bool:
+        """驗證兼安全邊界檢查：part_path 必須屬於指定 job 的 _ImportTemp 目錄且以 .part 結尾，非符號連結"""
+        if not part_path or os.path.islink(part_path):
+            return False
+
+        job_info = self.get_job(job_id)
+        if not job_info:
+            return False
+
+        dst_dir = os.path.abspath(job_info['dst_dir'])
+        temp_dir = os.path.abspath(os.path.join(dst_dir, "_ImportTemp"))
+        norm_part = os.path.abspath(part_path)
+
+        # 比對路徑邊界與副檔名
+        if not norm_part.startswith(temp_dir) or not norm_part.lower().endswith('.part'):
+            return False
+        return True
+
+    def _compute_sha256(self, filepath: str) -> str:
+        h = hashlib.sha256()
+        with open(filepath, 'rb') as f:
+            while chunk := f.read(64 * 1024):
+                h.update(chunk)
+        return h.hexdigest()
+
     def recover_and_get_pending_members(self, job_id: str) -> List[Dict[str, Any]]:
         """
-        Phase 2 崩潰恢復與續傳引擎 (Crash Recovery Engine)
-        依照崩潰恢復矩陣檢查並更新處於未完成狀態之成員，回傳需要處理的成員清單。
+        Phase 2 崩潰恢復與續傳引擎 (Crash Recovery Engine - 帶邊界防禦與 SHA-256 完整比對)
         """
         with self._get_conn() as conn:
             cursor = conn.cursor()
@@ -338,7 +376,6 @@ class TakeoutStateManager:
             )
             rows = [dict(r) for r in cursor.fetchall()]
 
-        recovery_updates = []
         pending_members = []
 
         for m in rows:
@@ -347,8 +384,9 @@ class TakeoutStateManager:
             part_p = m['part_path']
             dest_p = m['dest_reserved'] or m['final_destination']
 
-            part_exists = part_p is not None and os.path.isfile(part_p)
-            dest_exists = dest_p is not None and os.path.isfile(dest_p)
+            is_part_safe = part_p is not None and self._is_safe_part_path(job_id, part_p)
+            part_exists = is_part_safe and os.path.isfile(part_p)
+            dest_exists = dest_p is not None and os.path.isfile(dest_p) and not os.path.islink(dest_p)
 
             # 1. EXTRACTING 狀態處置
             if status == TakeoutState.EXTRACTING:
@@ -365,7 +403,7 @@ class TakeoutStateManager:
                 if part_exists:
                     pending_members.append(m)
                 else:
-                    # 暫存檔遺失，重置回 SECURITY_VALIDATED
+                    # 暫存檔遺失或不可信，重置回 SECURITY_VALIDATED
                     self.update_member_status(mid, TakeoutState.SECURITY_VALIDATED, part_path=None, sha256=None)
                     m['status'] = TakeoutState.SECURITY_VALIDATED
                     m['part_path'] = None
@@ -374,23 +412,21 @@ class TakeoutStateManager:
             # 3. DESTINATION_RESERVED 狀態處置
             elif status == TakeoutState.DESTINATION_RESERVED:
                 if part_exists and not dest_exists:
-                    # 中斷在 os.rename() 前，可繼續執行更名
                     pending_members.append(m)
                 elif not part_exists and dest_exists:
-                    # 檔案已在目的路徑，檢查 SHA-256/大小一致性
+                    # 必須同步校驗檔案大小與 SHA-256
                     try:
                         st = os.stat(dest_p)
                         if st.st_size == m['uncompressed_size']:
-                            self.update_member_status(mid, TakeoutState.COMPLETED, final_destination=dest_p)
-                            continue
+                            if m['sha256'] and self._compute_sha256(dest_p) == m['sha256']:
+                                self.update_member_status(mid, TakeoutState.COMPLETED, final_destination=dest_p)
+                                continue
                     except OSError:
                         pass
-                    self.update_member_status(mid, TakeoutState.RECOVERY_CONFLICT, error_msg="目的檔存在但容量/SHA-256不符")
+                    self.update_member_status(mid, TakeoutState.RECOVERY_CONFLICT, error_msg="目的檔存在但 SHA-256 校驗不符")
                 elif part_exists and dest_exists:
-                    # 兩者皆存在，標記衝突禁止覆寫
                     self.update_member_status(mid, TakeoutState.RECOVERY_CONFLICT, error_msg="Part 與 Dest 同時存在，禁止覆寫")
                 else:
-                    # 兩者皆遺失
                     self.update_member_status(mid, TakeoutState.SECURITY_VALIDATED, part_path=None)
                     m['status'] = TakeoutState.SECURITY_VALIDATED
                     pending_members.append(m)
