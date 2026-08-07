@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v2.1 Phase 2.1 邊界安全與 SHA-256 版)
-提供符合 ACID 的批次狀態推進、邊界防禦之崩潰恢復矩陣處理、FK 安全 Migration 與續傳機制。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v2.2 Phase 2.2 嚴謹邊界與續傳檢索版)
+提供符合 ACID 的批次狀態推進、嚴格 commonpath 邊界防禦、歷史 Job 續傳檢索與復原機制。
 """
 
 import os
@@ -209,6 +209,37 @@ class TakeoutStateManager:
             )
         return job_id
 
+    def find_resumable_job(self, src_dir: str, dst_dir: str, archive_fingerprints: List[str]) -> Optional[str]:
+        """
+        尋找可續傳的歷史 Job（相同 src, dst 且封存檔指紋完全吻合，狀態非終止）
+        """
+        if not archive_fingerprints:
+            return None
+
+        norm_src = os.path.abspath(src_dir)
+        norm_dst = os.path.abspath(dst_dir)
+
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT job_id FROM jobs 
+                WHERE src_dir = ? AND dst_dir = ? AND status IN (?, ?, ?)
+                ORDER BY created_at DESC
+                """,
+                (norm_src, norm_dst, "RUNNING", TakeoutState.FAILED, TakeoutState.COMPLETED_WITH_ERRORS)
+            )
+            jobs = cursor.fetchall()
+
+            for j in jobs:
+                jid = j['job_id']
+                cursor.execute("SELECT fingerprint FROM archives WHERE job_id = ?", (jid,))
+                db_fps = {r['fingerprint'] for r in cursor.fetchall()}
+                if db_fps and db_fps == set(archive_fingerprints):
+                    return jid
+
+        return None
+
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         with self._get_conn() as conn:
             cursor = conn.cursor()
@@ -228,6 +259,12 @@ class TakeoutStateManager:
         now = datetime.datetime.now().isoformat()
         with self._get_conn() as conn:
             cursor = conn.cursor()
+            # 若已有相同 job_id 與 fingerprint，直接回傳 archive_id
+            cursor.execute("SELECT archive_id FROM archives WHERE job_id = ? AND fingerprint = ?", (job_id, fingerprint))
+            row = cursor.fetchone()
+            if row:
+                return row['archive_id']
+
             cursor.execute(
                 "INSERT INTO archives (job_id, archive_path, archive_size, archive_mtime, fingerprint, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (job_id, archive_path, archive_size, archive_mtime, fingerprint, "RUNNING", now)
@@ -333,7 +370,11 @@ class TakeoutStateManager:
             return [dict(row) for row in cursor.fetchall()]
 
     def _is_safe_part_path(self, job_id: str, part_path: str) -> bool:
-        """驗證兼安全邊界檢查：part_path 必須屬於指定 job 的 _ImportTemp 目錄且以 .part 結尾，非符號連結"""
+        """
+        嚴格邊界檢查 (使用 os.path.commonpath)
+        part_path 必須位於特定 job 的暫存目錄 `<dst>\_ImportTemp\<job_id>\` 內部，
+        副檔名必須為 .part，且非符號連結。
+        """
         if not part_path or os.path.islink(part_path):
             return False
 
@@ -341,14 +382,20 @@ class TakeoutStateManager:
         if not job_info:
             return False
 
-        dst_dir = os.path.abspath(job_info['dst_dir'])
-        temp_dir = os.path.abspath(os.path.join(dst_dir, "_ImportTemp"))
-        norm_part = os.path.abspath(part_path)
+        dst_dir = os.path.realpath(job_info['dst_dir'])
+        job_temp_dir = os.path.realpath(os.path.join(dst_dir, "_ImportTemp", job_id))
+        real_part = os.path.realpath(part_path)
 
-        # 比對路徑邊界與副檔名
-        if not norm_part.startswith(temp_dir) or not norm_part.lower().endswith('.part'):
+        # 1. 檢查副檔名
+        if not real_part.lower().endswith('.part'):
             return False
-        return True
+
+        # 2. 精準檢查 commonpath 是否屬於工作專屬暫存目錄
+        try:
+            common = os.path.commonpath([job_temp_dir, real_part])
+            return os.path.normcase(common) == os.path.normcase(job_temp_dir)
+        except ValueError:
+            return False
 
     def _compute_sha256(self, filepath: str) -> str:
         h = hashlib.sha256()
@@ -359,7 +406,7 @@ class TakeoutStateManager:
 
     def recover_and_get_pending_members(self, job_id: str) -> List[Dict[str, Any]]:
         """
-        Phase 2 崩潰恢復與續傳引擎 (Crash Recovery Engine - 帶邊界防禦與 SHA-256 完整比對)
+        Phase 2 崩潰恢復與續傳引擎 (Crash Recovery Engine - 帶 commonpath 邊界防禦)
         """
         with self._get_conn() as conn:
             cursor = conn.cursor()
@@ -403,7 +450,6 @@ class TakeoutStateManager:
                 if part_exists:
                     pending_members.append(m)
                 else:
-                    # 暫存檔遺失或不可信，重置回 SECURITY_VALIDATED
                     self.update_member_status(mid, TakeoutState.SECURITY_VALIDATED, part_path=None, sha256=None)
                     m['status'] = TakeoutState.SECURITY_VALIDATED
                     m['part_path'] = None
@@ -414,7 +460,6 @@ class TakeoutStateManager:
                 if part_exists and not dest_exists:
                     pending_members.append(m)
                 elif not part_exists and dest_exists:
-                    # 必須同步校驗檔案大小與 SHA-256
                     try:
                         st = os.stat(dest_p)
                         if st.st_size == m['uncompressed_size']:

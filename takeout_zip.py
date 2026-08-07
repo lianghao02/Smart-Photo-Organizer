@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - ZIP 掃描、ZipInfo 唯讀讀取與單檔按需串流解壓模組 (v2.1 Phase 2.1 嚴謹修補版)
-修復按 member_index 檢索、排他建立 .part (xb)、磁碟空間預檢與安全更名。
+Google Takeout ZIP 匯入引擎 - ZIP 掃描、ZipInfo 唯讀讀取與單檔按需串流解壓模組 (v2.2 Phase 2.2 重試與雙重校驗版)
 """
 
 import os
 import zlib
+import uuid
 import shutil
 import zipfile
 import hashlib
@@ -145,15 +145,16 @@ class TakeoutZipScanner:
         zip_path: str,
         member_index: int,
         part_path: str,
+        expected_filename: Optional[str] = None,
+        expected_crc: Optional[int] = None,
+        expected_size: Optional[int] = None,
         cancel_check_func: Optional[Callable[[], bool]] = None
     ) -> Dict[str, Any]:
         """
         單一成員依 member_index 進行按需串流解壓至 part_path
-        - 使用排他模式 ('xb') 開啟暫存檔，防止覆寫既有檔案
-        - 解壓前檢查剩餘磁碟空間
-        - 邊寫入邊同步計算 CRC32 與 SHA-256
-        - 完成後進行 flush + fsync 寫入實體磁碟
-        - 發生例外或使用者取消時自動清理暫存檔
+        - 雙重比對 ZipInfo 檔名、CRC 與容量
+        - 排他建立 ('xb')，若碰撞重試生成新檔名
+        - 磁碟空間預檢與落碟 fsync
         """
         target_dir = os.path.dirname(os.path.abspath(part_path))
         os.makedirs(target_dir, exist_ok=True)
@@ -161,6 +162,7 @@ class TakeoutZipScanner:
         sha256 = hashlib.sha256()
         crc32_val = 0
         bytes_written = 0
+        final_part_path = part_path
 
         try:
             with zipfile.ZipFile(zip_path, 'r') as zf:
@@ -170,15 +172,34 @@ class TakeoutZipScanner:
 
                 info = infolist[member_index]
 
-                # 磁碟剩餘空間檢查 (至少需要 uncompressed_size * 2 + 100MB 緩衝)
+                # 雙重比對 ZipInfo
+                if expected_filename and info.filename != expected_filename:
+                    raise ZipExtractionError(f"成員檔名不符合 expected: {info.filename} vs {expected_filename}")
+                if expected_crc is not None and (info.CRC & 0xFFFFFFFF) != (expected_crc & 0xFFFFFFFF):
+                    raise ZipExtractionError(f"成員 CRC 不符合 expected: {info.CRC} vs {expected_crc}")
+                if expected_size is not None and info.file_size != expected_size:
+                    raise ZipExtractionError(f"成員容量不符合 expected: {info.file_size} vs {expected_size}")
+
+                # 磁碟剩餘空間檢查
                 usage = shutil.disk_usage(target_dir)
                 required_space = info.file_size * 2 + (100 * 1024 * 1024)
                 if usage.free < required_space:
                     raise ZipExtractionError(f"磁碟空間不足 (剩餘 {usage.free / (1024**2):.1f}MB < 需要 {required_space / (1024**2):.1f}MB)")
 
-                # 排他建立模式 'xb' 避免覆寫
-                with zf.open(info, 'r') as source_stream:
-                    with open(part_path, 'xb') as target_file:
+                # 排他寫入模式與重試
+                target_file = None
+                for _ in range(5):
+                    try:
+                        target_file = open(final_part_path, 'xb')
+                        break
+                    except FileExistsError:
+                        final_part_path = os.path.join(target_dir, f"{uuid.uuid4().hex}.part")
+
+                if not target_file:
+                    raise ZipExtractionError(f"無法建立排他暫存檔: {part_path}")
+
+                try:
+                    with zf.open(info, 'r') as source_stream:
                         while True:
                             if cancel_check_func and cancel_check_func():
                                 raise ZipExtractionError("使用者取消匯入任務")
@@ -191,9 +212,10 @@ class TakeoutZipScanner:
                             crc32_val = zlib.crc32(chunk, crc32_val)
                             bytes_written += len(chunk)
 
-                        # 落碟刷寫
                         target_file.flush()
                         os.fsync(target_file.fileno())
+                finally:
+                    target_file.close()
 
                 # 校驗輸出容量與 CRC32
                 computed_crc = crc32_val & 0xFFFFFFFF
@@ -205,12 +227,12 @@ class TakeoutZipScanner:
             return {
                 "sha256": sha256.hexdigest(),
                 "bytes_written": bytes_written,
-                "crc32": computed_crc
+                "crc32": computed_crc,
+                "part_path": final_part_path
             }
 
         except Exception as e:
-            # 發生例外時，確保刪除殘留之不完整 .part 暫存檔
-            if os.path.exists(part_path):
-                try: os.remove(part_path)
+            if os.path.exists(final_part_path):
+                try: os.remove(final_part_path)
                 except OSError: pass
             raise ZipExtractionError(f"串流解壓失敗 [member_index={member_index}]: {e}")

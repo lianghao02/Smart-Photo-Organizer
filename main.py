@@ -2196,17 +2196,16 @@ class WebBridge:
         return {"success": True}
 
     def _run_takeout_audit(self, src: str, dst: str, is_dry_run: bool):
-        job_id = f"job_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self._stop_event.clear()
         state_mgr = None
 
         try:
             self._on_status("running")
-            self._on_log("=== 📦 啟動 Takeout ZIP 第一階段：安全防護、SQLite 與 ZIP 快速盤點 ===", "info")
+            self._on_log("=== 📦 啟動 Takeout ZIP：安全防護、SQLite WAL 續傳與按需串流解壓 ===", "info")
 
             db_path = os.path.join(dst, "_ImportTemp", "takeout_import.db")
             state_mgr = import_state.TakeoutStateManager(db_path)
             job_type = import_state.JobType.PREVIEW if is_dry_run else import_state.JobType.IMPORT
-            state_mgr.create_job(job_id, job_type, src, dst)
 
             zip_files = []
             if os.path.isfile(src) and src.lower().endswith('.zip'):
@@ -2218,18 +2217,25 @@ class WebBridge:
                             zip_files.append(os.path.join(root, f))
 
             if not zip_files:
-                if state_mgr:
-                    state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
                 self._on_log("❌ 來源路徑下未搜尋到任何 .zip 封存檔！", "error")
                 self._on_status("paused")
                 return
 
             if len(zip_files) > takeout_zip.TakeoutZipScanner.MAX_ZIP_COUNT:
-                if state_mgr:
-                    state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
                 self._on_log(f"❌ 超過單一任務 ZIP 數量上限 ({len(zip_files)} > {takeout_zip.TakeoutZipScanner.MAX_ZIP_COUNT})！", "error")
                 self._on_status("paused")
                 return
+
+            # 計算指紋並尋找可續傳的歷史 Job
+            archive_fingerprints = [takeout_zip.TakeoutZipScanner.get_archive_fingerprint(zp) for zp in zip_files]
+            resumable_id = state_mgr.find_resumable_job(src, dst, archive_fingerprints)
+
+            if resumable_id:
+                job_id = resumable_id
+                self._on_log(f"🔄 偵測到可續傳歷史工作 [Job ID: {job_id}]，接續未完成成員...", "info")
+            else:
+                job_id = f"job_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                state_mgr.create_job(job_id, job_type, src, dst)
 
             self._on_log(f"🔍 搜尋到 {len(zip_files)} 個 Takeout ZIP 封存檔，開啟 ZipInfo 安全檢驗與中央目錄掃描...", "info")
 
@@ -2288,7 +2294,6 @@ class WebBridge:
             extracted_count = 0
             extract_errors = 0
 
-            # 建立按 archive_id 劃分的快取映射
             archive_map = {}
             for pm in pending_members:
                 arc_id = pm['archive_id']
@@ -2298,9 +2303,11 @@ class WebBridge:
 
             import uuid
             for idx, m in enumerate(pending_members, 1):
-                if getattr(self, '_stop_event', None) and self._stop_event.is_set():
+                if self._stop_event.is_set():
                     state_mgr.update_job_status(job_id, import_state.TakeoutState.CANCELLED)
-                    self._on_log("⚠️ 使用者取消匯入任務。", "warning")
+                    self._on_log("⚠️ 使用者取消 Takeout 任務！狀態更新為 CANCELLED。", "warning")
+                    with self._queue_lock:
+                        self._process_finished_msg = "Takeout 任務已取消。"
                     self._on_status("paused")
                     return
 
@@ -2322,21 +2329,38 @@ class WebBridge:
                         zip_path=archive_path,
                         member_index=m['member_index'],
                         part_path=part_path,
-                        cancel_check_func=lambda: getattr(self, '_stop_event', None) and self._stop_event.is_set()
+                        expected_filename=m['member_name'],
+                        expected_crc=m['member_crc'],
+                        expected_size=m['uncompressed_size'],
+                        cancel_check_func=lambda: self._stop_event.is_set()
                     )
 
+                    actual_part_path = res['part_path']
                     state_mgr.update_member_status(
                         mid,
                         import_state.TakeoutState.VERIFIED,
-                        part_path=part_path,
+                        part_path=actual_part_path,
                         sha256=res['sha256']
                     )
                     extracted_count += 1
+
+                    # 預覽模式 (is_dry_run == True): 用完即刪除 .part 暫存檔，確保不佔用容量
+                    if is_dry_run:
+                        if os.path.exists(actual_part_path):
+                            try: os.remove(actual_part_path)
+                            except OSError: pass
 
                     if idx % 50 == 0 or idx == len(pending_members):
                         self._on_log(f" └─ 串流解壓推進中 [{idx}/{len(pending_members)}] 成功: {extracted_count} 個", "info")
 
                 except Exception as e:
+                    if self._stop_event.is_set():
+                        state_mgr.update_member_status(mid, import_state.TakeoutState.CANCELLED)
+                        state_mgr.update_job_status(job_id, import_state.TakeoutState.CANCELLED)
+                        self._on_log("⚠️ 使用者取消 Takeout 任務！", "warning")
+                        self._on_status("paused")
+                        return
+
                     extract_errors += 1
                     state_mgr.update_member_status(mid, import_state.TakeoutState.FAILED, error_msg=str(e))
                     self._on_log(f"⚠️ 成員串流解壓失敗 [{m['filename']}]: {e}", "warning")
@@ -2390,9 +2414,10 @@ class WebBridge:
             self._on_log(">> ▶️ 任務繼續", "info")
 
     def stop_process(self):
+        self._stop_event.set()
         if self._processor:
             self._processor.stop()
-            self._on_log(">> ⏹ 正在停止任務...", "warn")
+        self._on_log(">> ⏹ 正在停止任務...", "warn")
 
     def _on_progress(self, data):
         with self._queue_lock:
