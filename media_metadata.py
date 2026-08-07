@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v3.2 中央格式與 95 分權重契合版)
-讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，與 DateParser 及 ConfigConstants.EXT_PHOTOS 完全契合。
+Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v3.3 零依賴解耦與 DateParser 契合版)
+讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，與 DateParser 及 95分 Google JSON 完全契合。
 """
 
 import os
@@ -9,10 +9,14 @@ import json
 import datetime
 from typing import Optional, Dict, Any
 
-import main as app_main
-
 
 class MediaMetadataExtractor:
+    # 共用照片副檔名集合 (包含所有相機原生與 RAW 格式)
+    EXT_PHOTOS = {
+        '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.raw', '.arw', '.cr2', '.nef',
+        '.cr3', '.dng', '.orf', '.rw2', '.pef', '.sr2'
+    }
+
     @staticmethod
     def parse_sidecar_json_bytes(json_bytes: bytes) -> Optional[dict]:
         """從 Sidecar JSON 位元組解析 photoTakenTime 或 creationTime 數據"""
@@ -50,12 +54,7 @@ class MediaMetadataExtractor:
         """
         orig_ext = os.path.splitext(filename)[1].lower()
 
-        # 使用主程式中央 ConfigConstants.EXT_PHOTOS 定義 (涵蓋 RAW 檔如 .cr3, .dng, .orf, .rw2, .pef, .sr2 等)
-        ext_photos = getattr(app_main.ConfigConstants, 'EXT_PHOTOS', {
-            '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.raw', '.arw', '.cr2', '.nef',
-            '.cr3', '.dng', '.orf', '.rw2', '.pef', '.sr2'
-        })
-        is_photo = orig_ext in ext_photos
+        is_photo = orig_ext in cls.EXT_PHOTOS
         sub_type_folder = "Photos" if is_photo else "Videos"
 
         # 轉換 Sidecar JSON 格式時間為 ISO 字串供 DateParser 以 95 分權重納入候選評估
@@ -67,7 +66,7 @@ class MediaMetadataExtractor:
             except Exception:
                 pass
 
-        # 呼叫專案核心 DateParser 的 get_date_details 方法 (包含 95 分 Google Takeout JSON 權重)
+        # 呼叫專案核心 DateParser 的 get_date_details 方法 (傳遞 google_json_date 觸發 95 分與 conflict 評估)
         details = date_parser.get_date_details(
             part_path,
             is_photo=is_photo,
@@ -78,6 +77,7 @@ class MediaMetadataExtractor:
         parsed_dt = details.get("date")
         confidence = details.get("confidence", 0)
         source_tag = details.get("source", "未知")
+        has_conflict = details.get("conflict", False)
 
         if parsed_dt:
             date_str = parsed_dt.strftime('%Y-%m-%d')
@@ -105,5 +105,5 @@ class MediaMetadataExtractor:
             "target_dir": target_subfolder,
             "parsed_dt": parsed_dt,
             "is_photo": is_photo,
-            "has_conflict": details.get("has_conflict", False)
+            "has_conflict": has_conflict
         }

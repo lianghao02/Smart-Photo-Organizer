@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 3.2 阻斷修補單元測試
-驗證 DateParser 95分 Google JSON 權重、RAW 檔辨識、Cross-ZIP 全量封存檔讀取、.part 雙重驗證與 Sidecar 原子更名
+Google Takeout ZIP 匯入引擎 Phase 3.3 實機落地單元與 Coordinator 整合測試
+驗證 DateParser _parse_iso_media_date、95分 Google JSON 權重、EXIF/JSON 衝突檢測、RAW 照片格式、全量 get_job_archives 跨檔與 Sidecar 原子寫入
 """
 
 import os
@@ -89,7 +89,7 @@ class TestTakeoutPhase3(unittest.TestCase):
         self.assertEqual(found_imp, job_import)
 
     def test_google_json_date_confidence_95_and_raw_formats(self):
-        """驗證 Google JSON 具備 95 分高可信度且 RAW 格式 (.cr3, .dng) 歸入 Photos"""
+        """驗證 Google JSON 正確解析 2018-06-15 具備 95 分高可信度且 RAW 格式 (.cr3, .dng) 歸入 Photos"""
         date_parser = app_main.DateParser()
         part_path = os.path.join(self.dst_dir, "sample.cr3")
         with open(part_path, 'wb') as f:
@@ -112,8 +112,8 @@ class TestTakeoutPhase3(unittest.TestCase):
         expected_dir = os.path.join(self.dst_dir, "2018", "06", "Photos")
         self.assertEqual(os.path.normpath(meta_res['target_dir']), os.path.normpath(expected_dir))
 
-    def test_cross_zip_all_archives_map_lookup(self):
-        """驗證即使 ZIP2 只有 JSON，get_job_archives 仍能讀取 zip2 並成功取得 Sidecar"""
+    def test_cross_zip_all_archives_map_lookup_and_conflict_flag(self):
+        """驗證即使 ZIP2 只有 JSON，get_job_archives 仍能讀取 zip2 且日期衝突精準回傳 has_conflict"""
         db_path = os.path.join(self.dst_dir, "_ImportTemp", "cross_zip_test.db")
         state_mgr = import_state.TakeoutStateManager(db_path)
         job_id = "job_cross_001"
