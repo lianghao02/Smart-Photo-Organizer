@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v1.1 高效能批次與約束版)
-管理 takeout_import.db 資料庫，提供符合 ACID 的批次狀態推進與復原機制。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v1.2 遷移與安全 UPSERT 版)
+提供符合 ACID 的批次狀態推進、Schema 自動遷移 (Migration) 與復原機制。
 """
 
 import os
@@ -43,6 +43,7 @@ class TakeoutStateManager:
         self.db_path = db_path
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
         self._init_db()
+        self._migrate_db()
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30.0)
@@ -114,7 +115,7 @@ class TakeoutStateManager:
             );
             """)
 
-            # Sidecar 配對表
+            # Sidecar 配對表 (新增 UNIQUE 防止 JSON 重複指派)
             conn.execute("""
             CREATE TABLE IF NOT EXISTS sidecar_links (
                 link_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,7 +123,7 @@ class TakeoutStateManager:
                 media_member_id INTEGER NOT NULL,
                 json_member_id INTEGER NOT NULL,
                 match_quality TEXT NOT NULL,
-                UNIQUE(job_id, media_member_id, json_member_id),
+                UNIQUE(job_id, json_member_id),
                 FOREIGN KEY (job_id) REFERENCES jobs(job_id),
                 FOREIGN KEY (media_member_id) REFERENCES members(member_id),
                 FOREIGN KEY (json_member_id) REFERENCES members(member_id)
@@ -135,6 +136,18 @@ class TakeoutStateManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_filename ON members(filename);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_job_status ON members(job_id, status);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_archives_fingerprint ON archives(fingerprint);")
+
+    def _migrate_db(self):
+        """自動 Schema 遷移 (相容舊版 Phase 1 開啟的資料庫)"""
+        with self._get_conn() as conn:
+            # 檢查 archives 欄位
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(archives);")
+            arc_cols = {row['name'] for row in cursor.fetchall()}
+            if 'status' not in arc_cols:
+                conn.execute("ALTER TABLE archives ADD COLUMN status TEXT NOT NULL DEFAULT 'RUNNING';")
+            if 'error_msg' not in arc_cols:
+                conn.execute("ALTER TABLE archives ADD COLUMN error_msg TEXT;")
 
     def create_job(self, job_id: str, job_type: str, src_dir: str, dst_dir: str) -> str:
         now = datetime.datetime.now().isoformat()
@@ -171,7 +184,7 @@ class TakeoutStateManager:
             )
 
     def register_members_batch(self, members_data: List[Dict[str, Any]]):
-        """高效能批次插入成員，單一交易 Commit 避免硬碟頻繁 IO"""
+        """採用安全 UPSERT (ON CONFLICT DO UPDATE) 替代 INSERT OR REPLACE，保護 member_id 不變"""
         if not members_data:
             return
         now = datetime.datetime.now().isoformat()
@@ -197,11 +210,15 @@ class TakeoutStateManager:
         ]
         with self._get_conn() as conn:
             conn.executemany("""
-            INSERT OR REPLACE INTO members (
+            INSERT INTO members (
                 job_id, archive_id, archive_fingerprint, member_index, member_name,
                 normalized_path, filename, member_crc, uncompressed_size, compressed_size,
                 is_media, is_json, status, error_msg, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(archive_id, member_index) DO UPDATE SET
+                status = excluded.status,
+                error_msg = excluded.error_msg,
+                updated_at = excluded.updated_at
             """, rows)
 
     def register_member(self, member_data: Dict[str, Any]) -> int:
@@ -216,6 +233,12 @@ class TakeoutStateManager:
             return row['member_id'] if row else 0
 
     def update_member_status(self, member_id: int, status: str, **kwargs):
+        self.update_members_status_batch([member_id], status, **kwargs)
+
+    def update_members_status_batch(self, member_ids: List[int], status: str, **kwargs):
+        """高效能單一交易批次更新狀態"""
+        if not member_ids:
+            return
         now = datetime.datetime.now().isoformat()
         fields = ["status = ?", "updated_at = ?"]
         params = [status, now]
@@ -225,11 +248,11 @@ class TakeoutStateManager:
                 fields.append(f"{key} = ?")
                 params.append(val)
 
-        params.append(member_id)
         sql = f"UPDATE members SET {', '.join(fields)} WHERE member_id = ?"
+        rows = [tuple(params + [mid]) for mid in member_ids]
 
         with self._get_conn() as conn:
-            conn.execute(sql, params)
+            conn.executemany(sql, rows)
 
     def get_member(self, member_id: int) -> Optional[Dict[str, Any]]:
         with self._get_conn() as conn:

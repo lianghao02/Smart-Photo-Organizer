@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 跨 ZIP 媒體與 Sidecar JSON 索引配對模組 (v1.1 修補版)
-修復 stem 匹配、.supplemental-metadata.json 解析與不重複配對計數。
+Google Takeout ZIP 匯入引擎 - 跨 ZIP 媒體與 Sidecar JSON 索引配對模組 (v1.2 全面修補版)
+修復 Tuple 匯入缺失、截斷 supplemental metadata、JSON 重複指派與批次更新。
 """
 
 import os
-from typing import List, Dict, Any, Set
+import re
+from typing import List, Dict, Any, Set, Tuple, Optional
 from import_state import TakeoutStateManager
 
 
@@ -17,13 +18,15 @@ class TakeoutIndexer:
     def _extract_json_stem(norm_p: str) -> Tuple[str, str]:
         """
         從 JSON 的 normalized_path 中解析出相對應的媒體 stem 與全名
-        支援 .json 以及 .supplemental-metadata.json
+        支援 .json 以及截斷的 .supplemental-metadata.json 變體 (例如 .supplemental-metada.json)
         """
         lower_p = norm_p.lower()
-        if lower_p.endswith('.supplemental-metadata.json'):
-            stem = norm_p[:-27]  # 去除 .supplemental-metadata.json
+        # 匹配 .supplemental...json 後綴變體
+        m = re.search(r'\.supplemental[^/]*\.json$', lower_p)
+        if m:
+            stem = norm_p[:m.start()]
         elif lower_p.endswith('.json'):
-            stem = norm_p[:-5]   # 去除 .json
+            stem = norm_p[:-5]
         else:
             stem = norm_p
         return stem, os.path.basename(stem)
@@ -39,9 +42,9 @@ class TakeoutIndexer:
             cursor.execute("SELECT * FROM members WHERE job_id = ?", (job_id,))
             rows = [dict(r) for r in cursor.fetchall()]
 
-        json_by_full_path = {}
-        json_by_stem_path = {}
-        json_by_filename = {}
+        json_by_full_path: Dict[str, dict] = {}
+        json_by_stem_path: Dict[str, dict] = {}
+        json_by_filename: Dict[str, List[dict]] = {}
 
         media_list = []
         json_count = 0
@@ -64,7 +67,7 @@ class TakeoutIndexer:
                 stem_lower = stem.lower()
                 json_by_stem_path[stem_lower] = m
 
-                # 去除副檔名後的 stem (例如包含照片副檔名的與沒包含的)
+                # 去除媒體副檔名後的 base stem
                 media_base_stem = os.path.splitext(stem_lower)[0]
                 json_by_stem_path[media_base_stem] = m
 
@@ -77,11 +80,12 @@ class TakeoutIndexer:
                 media_count += 1
                 media_list.append(m)
 
-        # 配對紀錄與單一 JSON 賦予集合 (防止同一 JSON 重複計算)
+        # 配對紀錄與單一 JSON 獨佔賦予集合
         matched_pair_count = 0
         unmatched_media_count = 0
         assigned_json_ids: Set[int] = set()
         sidecar_rows = []
+        indexed_media_ids = []
 
         for media in media_list:
             norm_p = media['normalized_path'].lower()
@@ -89,34 +93,43 @@ class TakeoutIndexer:
             matched_json = None
             match_quality = "NONE"
 
-            # 配對 1: 同路徑全檔名 + .json 或 .supplemental-metadata.json
-            cand_full_1 = norm_p + ".json"
-            cand_full_2 = norm_p + ".supplemental-metadata.json"
-            if cand_full_1 in json_by_full_path:
-                matched_json = json_by_full_path[cand_full_1]
-                match_quality = "EXACT_FULL_PATH"
-            elif cand_full_2 in json_by_full_path:
-                matched_json = json_by_full_path[cand_full_2]
-                match_quality = "EXACT_FULL_PATH_SUPPLEMENTAL"
+            # 準備可配對的候選 JSON key 列表
+            candidates = [
+                (norm_p + ".json", "EXACT_FULL_PATH"),
+                (norm_p + ".supplemental-metadata.json", "EXACT_FULL_PATH_SUPPLEMENTAL"),
+                (media_stem + ".json", "BASE_STEM"),
+                (media_stem + ".supplemental-metadata.json", "BASE_STEM_SUPPLEMENTAL"),
+            ]
 
-            # 配對 2: 同路徑 stem + .json (e.g. IMG_001.png 匹配 IMG_001.json 或 IMG_001.png.json)
-            elif norm_p in json_by_stem_path:
-                matched_json = json_by_stem_path[norm_p]
-                match_quality = "EXACT_STEM"
-            elif media_stem in json_by_stem_path:
-                matched_json = json_by_stem_path[media_stem]
-                match_quality = "BASE_STEM"
+            # 1. 優先嘗試全名與 Stem 匹配
+            for key, qual in candidates:
+                if key in json_by_full_path:
+                    cand = json_by_full_path[key]
+                    if cand['member_id'] not in assigned_json_ids:
+                        matched_json = cand
+                        match_quality = qual
+                        break
+                elif key in json_by_stem_path:
+                    cand = json_by_stem_path[key]
+                    if cand['member_id'] not in assigned_json_ids:
+                        matched_json = cand
+                        match_quality = qual
+                        break
 
-            # 配對 3: 同檔名 JSON (跨資料夾/跨 ZIP)
-            else:
-                fn_cand_1 = (media['filename'] + ".json").lower()
-                fn_cand_2 = (media['filename'] + ".supplemental-metadata.json").lower()
-                if fn_cand_1 in json_by_filename and len(json_by_filename[fn_cand_1]) == 1:
-                    matched_json = json_by_filename[fn_cand_1][0]
-                    match_quality = "FILENAME_MATCH"
-                elif fn_cand_2 in json_by_filename and len(json_by_filename[fn_cand_2]) == 1:
-                    matched_json = json_by_filename[fn_cand_2][0]
-                    match_quality = "FILENAME_SUPPLEMENTAL_MATCH"
+            # 2. 其次嘗試檔名匹配 (跨資料夾/跨 ZIP)
+            if not matched_json:
+                fn_cands = [
+                    (media['filename'] + ".json").lower(),
+                    (media['filename'] + ".supplemental-metadata.json").lower(),
+                ]
+                for fn_key in fn_cands:
+                    if fn_key in json_by_filename:
+                        # 篩選尚未被指派的 JSON 候選
+                        unassigned = [j for j in json_by_filename[fn_key] if j['member_id'] not in assigned_json_ids]
+                        if len(unassigned) == 1:
+                            matched_json = unassigned[0]
+                            match_quality = "FILENAME_MATCH"
+                            break
 
             if matched_json:
                 matched_pair_count += 1
@@ -125,8 +138,7 @@ class TakeoutIndexer:
             else:
                 unmatched_media_count += 1
 
-            # 狀態更新為 INDEXED
-            self.state_mgr.update_member_status(media['member_id'], "INDEXED")
+            indexed_media_ids.append(media['member_id'])
 
         # 批次寫入 sidecar_links
         if sidecar_rows:
@@ -135,6 +147,9 @@ class TakeoutIndexer:
                     "INSERT OR IGNORE INTO sidecar_links (job_id, media_member_id, json_member_id, match_quality) VALUES (?, ?, ?, ?)",
                     sidecar_rows
                 )
+
+        # 高效能批次更新媒體狀態為 INDEXED
+        self.state_mgr.update_members_status_batch(indexed_media_ids, "INDEXED")
 
         audit_report = {
             "job_id": job_id,

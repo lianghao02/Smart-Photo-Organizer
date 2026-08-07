@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - ZIP 掃描、ZipInfo 唯讀讀取與資訊安全防護模組 (v1.1 修補版)
+Google Takeout ZIP 匯入引擎 - ZIP 掃描、ZipInfo 唯讀讀取與資訊安全防護模組 (v1.2 全面修補版)
 """
 
 import os
@@ -41,7 +41,7 @@ class TakeoutZipScanner:
     def validate_zip_info(cls, info: zipfile.ZipInfo) -> Tuple[bool, Optional[str]]:
         """
         審查單一 ZipInfo 成員之資訊安全性
-        拒絕：絕對路徑、磁碟代號、UNC路徑、.. 路徑穿越、符號連結、加密成員、不支援的壓縮法、過大 JSON 與 Zip Bomb。
+        拒絕：絕對路徑、磁碟代號、UNC路徑、.. 路徑穿越、符號連結、加密成員、不支援的壓縮法、非空零壓縮容量與 Zip Bomb。
         """
         filename = info.filename
 
@@ -76,14 +76,13 @@ class TakeoutZipScanner:
         if ext == '.json' and info.file_size > cls.MAX_JSON_SIZE_BYTES:
             return False, f"JSON 成員超過 10MB 限制: {info.file_size} bytes"
 
-        # 7. Zip Bomb 異常壓縮比檢查與 zero compress_size 防護
+        # 7. 非空成員解壓大於 0 但壓縮大小等於 0 判定為損毀，全部拒絕
         if info.file_size > 0:
-            if info.compress_size == 0 and info.compress_type != zipfile.ZIP_STORED:
-                return False, f"異常損毀成員 (壓縮大小為 0): {filename}"
-            if info.compress_size > 0 and info.file_size > 1_048_576:
-                ratio = info.file_size / float(info.compress_size)
-                if ratio > cls.MAX_COMPRESSION_RATIO:
-                    return False, f"潛在 Zip Bomb 攻擊 (壓縮比 {ratio:.1f}:1): {filename}"
+            if info.compress_size == 0:
+                return False, f"異常損毀成員 (非空檔案壓縮大小為 0): {filename}"
+            ratio = info.file_size / float(info.compress_size)
+            if ratio > cls.MAX_COMPRESSION_RATIO:
+                return False, f"潛在 Zip Bomb 攻擊 (壓縮比 {ratio:.1f}:1): {filename}"
 
         return True, None
 

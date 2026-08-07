@@ -2231,6 +2231,7 @@ class WebBridge:
             self._on_log(f"🔍 搜尋到 {len(zip_files)} 個 Takeout ZIP 封存檔，開啟 ZipInfo 安全檢驗與中央目錄掃描...", "info")
 
             total_valid_members = 0
+            total_job_members = 0
             archive_errors = 0
 
             for zp in zip_files:
@@ -2240,6 +2241,16 @@ class WebBridge:
                 
                 try:
                     members = takeout_zip.TakeoutZipScanner.scan_archive(zp)
+                    total_job_members += len(members)
+                    if total_job_members > takeout_zip.TakeoutZipScanner.MAX_JOB_TOTAL_MEMBERS:
+                        state_mgr.update_archive_status(arc_id, "FAILED", "超過任務成員總數上限")
+                        state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
+                        self._on_log(f"❌ 任務成員總數 ({total_job_members:,}) 超過上限 {takeout_zip.TakeoutZipScanner.MAX_JOB_TOTAL_MEMBERS:,}！盤點中止。", "error")
+                        with self._queue_lock:
+                            self._process_finished_msg = "Takeout 盤點失敗：成員總數超過上限。"
+                        self._on_status("paused")
+                        return
+
                     for m in members:
                         m['job_id'] = job_id
                         m['archive_id'] = arc_id

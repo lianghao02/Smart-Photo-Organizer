@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 1.1 阻斷修補單元測試
-驗證 Sidecar stem/supplemental-metadata 配對、SQLite 批次寫入與資訊安全防護
+Google Takeout ZIP 匯入引擎 Phase 1.2 阻斷修補與相容性測試
+驗證 Schema 遷移 (Migration)、截斷 supplemental metadata、JSON 獨佔指派與 DB UPSERT。
 """
 
 import os
 import sys
 import shutil
+import sqlite3
 import tempfile
 import zipfile
 import unittest
@@ -34,12 +35,42 @@ class TestTakeoutPhase1(unittest.TestCase):
             zf.writestr("Takeout/Google Photos/Album2016/IMG_001.png", b"fake png bytes")
             zf.writestr("Takeout/Google Photos/Album2016/IMG_001.json", b'{"photoTakenTime":{"timestamp":"1471670000"}}')
 
-            # 3. Supplemental metadata 配對 (IMG_002.HEIC 匹配 IMG_002.HEIC.supplemental-metadata.json)
+            # 3. 截斷的 Supplemental metadata 配對 (IMG_002.HEIC 匹配 IMG_002.HEIC.supplemental-metada.json)
             zf.writestr("Takeout/Google Photos/Album2017/IMG_002.HEIC", b"fake heic bytes")
-            zf.writestr("Takeout/Google Photos/Album2017/IMG_002.HEIC.supplemental-metadata.json", b'{"photoTakenTime":{"timestamp":"1500000000"}}')
+            zf.writestr("Takeout/Google Photos/Album2017/IMG_002.HEIC.supplemental-metada.json", b'{"photoTakenTime":{"timestamp":"1500000000"}}')
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_db_migration_from_old_schema(self):
+        """驗證舊版 Phase 1 SQLite 資料庫開啟時能自動無縫進行 Schema Migration"""
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "old_takeout.db")
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+        # 手動建立缺少 status / error_msg 欄位的舊版 archives 資料表
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+        CREATE TABLE archives (
+            archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            archive_path TEXT NOT NULL,
+            archive_size INTEGER NOT NULL,
+            archive_mtime REAL NOT NULL,
+            fingerprint TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """)
+        conn.commit()
+        conn.close()
+
+        # 使用 TakeoutStateManager 開啟該舊資料庫，驗證 Migration 是否自動成功
+        state_mgr = import_state.TakeoutStateManager(db_path)
+        with state_mgr._get_conn() as c:
+            cursor = c.cursor()
+            cursor.execute("PRAGMA table_info(archives);")
+            cols = {r['name'] for r in cursor.fetchall()}
+            self.assertIn("status", cols)
+            self.assertIn("error_msg", cols)
 
     def test_zip_security_validation(self):
         # 測試路徑穿越檢查
@@ -61,7 +92,15 @@ class TestTakeoutPhase1(unittest.TestCase):
         self.assertFalse(is_safe)
         self.assertIn("符號連結", reason)
 
-    def test_phase1_pipeline_with_supplemental_and_stem(self):
+        # 測試非空零壓縮大小檢查
+        zero_info = zipfile.ZipInfo("broken_file.jpg")
+        zero_info.file_size = 2000000
+        zero_info.compress_size = 0
+        is_safe, reason = takeout_zip.TakeoutZipScanner.validate_zip_info(zero_info)
+        self.assertFalse(is_safe)
+        self.assertIn("壓縮大小為 0", reason)
+
+    def test_phase1_pipeline_with_truncated_supplemental_and_stem(self):
         db_path = os.path.join(self.dst_dir, "_ImportTemp", "takeout_import.db")
         state_mgr = import_state.TakeoutStateManager(db_path)
         job_id = "test_job_001"
@@ -80,7 +119,7 @@ class TestTakeoutPhase1(unittest.TestCase):
             m['archive_fingerprint'] = fingerprint
             m['status'] = import_state.TakeoutState.SECURITY_VALIDATED
 
-        # 測試 SQLite 高效能批次插入
+        # 測試 SQLite 高效能批次與安全 UPSERT
         state_mgr.register_members_batch(members)
 
         # 建立索引與配對
