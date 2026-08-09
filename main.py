@@ -2190,7 +2190,111 @@ class WebBridge:
             'gps_enabled': config_dict.get('gps_enabled', False),
             'resume_enabled': config_dict.get('resume_enabled', True),
             'blur_check_enabled': config_dict.get('blur_check_enabled', False),
-                 # ============================================================
+            'skip_existing': config_dict.get('skip_existing', False),
+            'dry_run': config_dict.get('dry_run', False),
+            'smart_screenshot': config_dict.get('smart_screenshot', True),
+            'screenshot_strict_mode': config_dict.get('screenshot_strict_mode', True),
+            'onedrive_protect': config_dict.get('onedrive_protect', True),
+            'folder_pattern': config_dict.get('folder_pattern', 'ym'),
+            'sidecar_enabled': config_dict.get('sidecar_enabled', True),
+        }
+
+        self._processor = Processor(cfg, progress_callback=self._on_progress, status_callback=self._on_status)
+        threading.Thread(target=self._run_processor, daemon=True).start()
+        return {"success": True}
+
+    def _run_takeout_audit(self, src: str, dst: str, is_dry_run: bool):
+        self._stop_event.clear()
+        state_mgr = None
+
+        try:
+            self._on_status("running")
+            self._on_log("=== 📦 啟動 Takeout ZIP：安全防護、SQLite WAL 續傳與按需串流解壓 ===", "info")
+
+            db_path = os.path.join(dst, "_ImportTemp", "takeout_import.db")
+            state_mgr = import_state.TakeoutStateManager(db_path)
+            job_type = import_state.JobType.PREVIEW if is_dry_run else import_state.JobType.IMPORT
+
+            zip_files = []
+            if os.path.isfile(src) and src.lower().endswith('.zip'):
+                zip_files.append(src)
+            elif os.path.isdir(src):
+                for root, _, files in os.walk(src):
+                    for f in files:
+                        if f.lower().endswith('.zip'):
+                            zip_files.append(os.path.join(root, f))
+
+            if not zip_files:
+                self._on_log("❌ 來源路徑下未搜尋到任何 .zip 封存檔！", "error")
+                self._on_status("paused")
+                return
+
+            if len(zip_files) > takeout_zip.TakeoutZipScanner.MAX_ZIP_COUNT:
+                self._on_log(f"❌ 超過單一任務 ZIP 數量上限 ({len(zip_files)} > {takeout_zip.TakeoutZipScanner.MAX_ZIP_COUNT})！", "error")
+                self._on_status("paused")
+                return
+
+            # 計算指紋並尋找可續傳的歷史 Job
+            archive_fingerprints = [takeout_zip.TakeoutZipScanner.get_archive_fingerprint(zp) for zp in zip_files]
+            resumable_id = state_mgr.find_resumable_job(src, dst, archive_fingerprints)
+
+            if resumable_id:
+                job_id = resumable_id
+                self._on_log(f"🔄 偵測到可續傳歷史工作 [Job ID: {job_id}]，接續未完成成員...", "info")
+            else:
+                job_id = f"job_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                state_mgr.create_job(job_id, job_type, src, dst)
+
+            self._on_log(f"🔍 搜尋到 {len(zip_files)} 個 Takeout ZIP 封存檔，開啟 ZipInfo 安全檢驗與中央目錄掃描...", "info")
+
+            total_valid_members = 0
+            total_job_members = 0
+            archive_errors = 0
+
+            for zp in zip_files:
+                st = os.stat(zp)
+                fingerprint = takeout_zip.TakeoutZipScanner.get_archive_fingerprint(zp)
+                arc_id = state_mgr.record_archive(job_id, zp, st.st_size, st.st_mtime, fingerprint)
+                
+                try:
+                    members = takeout_zip.TakeoutZipScanner.scan_archive(zp)
+                    total_job_members += len(members)
+                    if total_job_members > takeout_zip.TakeoutZipScanner.MAX_JOB_TOTAL_MEMBERS:
+                        state_mgr.update_archive_status(arc_id, "FAILED", "超過任務成員總數上限")
+                        state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
+                        self._on_log(f"❌ 任務成員總數 ({total_job_members:,}) 超過上限 {takeout_zip.TakeoutZipScanner.MAX_JOB_TOTAL_MEMBERS:,}！盤點中止。", "error")
+                        with self._queue_lock:
+                            self._process_finished_msg = "Takeout 盤點失敗：成員總數超過上限。"
+                        self._on_status("paused")
+                        return
+
+                    for m in members:
+                        m['job_id'] = job_id
+                        m['archive_id'] = arc_id
+                        m['archive_fingerprint'] = fingerprint
+                        m['status'] = import_state.TakeoutState.SECURITY_REJECTED if not m['is_safe'] else import_state.TakeoutState.SECURITY_VALIDATED
+                        if m['is_safe']:
+                            total_valid_members += 1
+                    
+                    state_mgr.register_members_batch(members)
+                    state_mgr.update_archive_status(arc_id, "COMPLETED")
+                except Exception as e:
+                    archive_errors += 1
+                    state_mgr.update_archive_status(arc_id, "FAILED", str(e))
+                    self._on_log(f"⚠️ 封存檔安全驗證失敗 [{os.path.basename(zp)}]: {e}", "warning")
+
+            if total_valid_members == 0:
+                state_mgr.update_job_status(job_id, import_state.TakeoutState.FAILED)
+                self._on_log("❌ 所有 ZIP 封存檔驗證均告失敗或內部無有效成員！盤點中止。", "error")
+                with self._queue_lock:
+                    self._process_finished_msg = "Takeout 盤點失敗：所有封存檔無有效成員。"
+                self._on_status("paused")
+                return
+
+            indexer = takeout_index.TakeoutIndexer(state_mgr)
+            report = indexer.build_cross_zip_index(job_id)
+
+            # ============================================================
             # Phase 2 & Phase 3：逐一媒體單檔 End-to-End 歸檔流水線 (Single-Item Pipeline)
             # ============================================================
             self._on_log("⚡ 啟動 Phase 2/3 按需單檔串流解壓、EXIF/Sidecar 日期決策與 Windows os.rename() 歸檔...", "info")
@@ -2230,7 +2334,7 @@ class WebBridge:
                     pipeline_errors += 1
                     continue
 
-                # 1. 檢查是否可重用既有相符的 .part 暫存檔（崩潰續傳處理，雙重驗證容量與 SHA-256）
+                # 1. 檢查是否可重用既有相符的 .part 暫存檔（崩潰續傳處理，避免重複解壓）
                 actual_part_path = m['part_path']
                 sha256_hash = m['sha256']
                 part_reused = False
@@ -2297,127 +2401,11 @@ class WebBridge:
                         except OSError: pass
                     continue
 
-                # 3. 讀取 Sidecar JSON 數據 (依 Sidecar 自己的 archive_id 開啟對應 ZIP)
+                # 3. 讀取 Sidecar JSON 數據 (修正 Cross-ZIP：依 Sidecar 自己的 archive_id 開啟)
                 sidecar_info = state_mgr.get_sidecar_for_media(mid)
                 sidecar_json_bytes = None
                 if sidecar_info:
                     json_arc_path = archive_map.get(sidecar_info['archive_id'])
-                    if json_arc_path and os.path.exists(json_arc_path):
-                        try:
-                            with zipfile.ZipFile(json_arc_path, 'r') as zf_json:
-                                info_j = zf_json.infolist()[sidecar_info['member_index']]
-                                sidecar_json_bytes = zf_json.read(info_j)
-                        except Exception:
-                            pass
-
-                json_data = media_metadata.MediaMetadataExtractor.parse_sidecar_json_bytes(sidecar_json_bytes)
-
-                # 4. 從 .part 解析 EXIF/ffprobe ➔ METADATA_PARSED
-                try:
-                    meta_res = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
-                        part_path=actual_part_path,
-                        filename=m['filename'],
-                        dst_root=dst,
-                        date_parser=date_parser,
-                        json_data=json_data,
-                        folder_pattern=getattr(self._app_config, 'folder_pattern', 'ym'),
-                        rename_mode=getattr(self._app_config, 'rename_mode', 'date_seq')
-                    )
-
-                    state_mgr.update_member_status(
-                        mid,
-                        import_state.TakeoutState.METADATA_PARSED,
-                        date_candidate=meta_res['date_str'],
-                        date_source=meta_res['date_source'],
-                        date_confidence=meta_res['confidence']
-                    )
-
-                    # 5. PREVIEW 預覽模式（DRY_RUN）：記錄狀態後預覽完成，刪除 .part 暫存
-                    if is_dry_run:
-                        state_mgr.update_member_status(mid, import_state.TakeoutState.PREVIEW_ANALYZED)
-                        if os.path.exists(actual_part_path):
-                            try: os.remove(actual_part_path)
-                            except OSError: pass
-                        archived_count += 1
-                        continue
-
-                    # 6. 正式匯入模式：在 naming_lock 取得唯一目的檔案名稱 ➔ DESTINATION_RESERVED
-                    target_dir = meta_res['target_dir']
-                    os.makedirs(target_dir, exist_ok=True)
-                    orig_ext = os.path.splitext(m['filename'])[1].lower()
-
-                    final_dest = None
-                    with naming_lock:
-                        if meta_res['date_str']:
-                            base_name = meta_res['date_str'].replace('-', '_')
-                        else:
-                            base_name = "No_Date_" + os.path.splitext(m['filename'])[0]
-
-                        counter = 1
-                        while True:
-                            candidate_name = f"{base_name}_{counter:03d}{orig_ext}"
-                            candidate_path = os.path.join(target_dir, candidate_name)
-                            if candidate_path not in reserved_destinations and not os.path.exists(candidate_path):
-                                reserved_destinations.add(candidate_path)
-                                final_dest = candidate_path
-                                break
-                            counter += 1
-
-                    state_mgr.update_member_status(mid, import_state.TakeoutState.DESTINATION_RESERVED, dest_reserved=final_dest)
-
-                    # 7. 執行 Windows os.rename() 原子更名（零資料覆寫防護與 FileExistsError 輪替）
-                    rename_success = False
-                    for retry in range(5):
-                        try:
-                            os.rename(actual_part_path, final_dest)
-                            rename_success = True
-                            break
-                        except FileExistsError:
-                            with naming_lock:
-                                counter += 1
-                                candidate_name = f"{base_name}_{counter:03d}{orig_ext}"
-                                final_dest = os.path.join(target_dir, candidate_name)
-                                reserved_destinations.add(final_dest)
-                            state_mgr.update_member_status(mid, import_state.TakeoutState.DESTINATION_RESERVED, dest_reserved=final_dest)
-                        except OSError as e:
-                            raise e
-
-                    if not rename_success:
-                        raise OSError(f"os.rename 重試失敗: {final_dest}")
-
-                    # 8. Sidecar JSON 原子落碟寫入 (.json.part -> flush -> fsync -> rename .json)
-                    if sidecar_json_bytes and getattr(self._app_config, 'sidecar_enabled', True):
-                        json_part = final_dest + ".json.part"
-                        json_final = final_dest + ".json"
-                        try:
-                            with open(json_part, 'xb') as jf:
-                                jf.write(sidecar_json_bytes)
-                                jf.flush()
-                                os.fsync(jf.fileno())
-                            os.rename(json_part, json_final)
-                        except (FileExistsError, OSError):
-                            if os.path.exists(json_part):
-                                try: os.remove(json_part)
-                                except OSError: pass
-
-                    # 9. 提交 COMPLETED ➔ .part 已移走，單檔完整流水線結束！
-                    state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED, final_destination=final_dest)
-                    archived_count += 1
-
-                    if idx % 50 == 0 or idx == len(pending_members):
-                        self._on_log(f" └─ 歸檔進行中 [{idx}/{len(pending_members)}] 成功: {archived_count} 個, 跳過重複: {skipped_dup_count} 個", "info")
-
-                except Exception as e:
-                    if self._stop_event.is_set():
-                        state_mgr.update_member_status(mid, import_state.TakeoutState.CANCELLED)
-                        state_mgr.update_job_status(job_id, import_state.TakeoutState.CANCELLED)
-                        self._on_log("⚠️ 使用者取消 Takeout 任務！", "warning")
-                        self._on_status("paused")
-                        return
-
-                    pipeline_errors += 1
-                    state_mgr.update_member_status(mid, import_state.TakeoutState.FAILED, error_msg=str(e))
-                    self._on_log(f"⚠️ 成員歸檔失敗 [{m['filename']}]: {e}", "warning")h = archive_map.get(sidecar_info['archive_id'])
                     if json_arc_path and os.path.exists(json_arc_path):
                         try:
                             with zipfile.ZipFile(json_arc_path, 'r') as zf_json:
@@ -2501,14 +2489,20 @@ class WebBridge:
                     if not rename_success:
                         raise OSError(f"os.rename 重試失敗: {final_dest}")
 
-                    # 8. Sidecar JSON 檔排他跟隨寫入 (xb 模式防止無效覆寫)
+                    # 8. Sidecar JSON 原子落碟寫入 (.json.part -> flush -> fsync -> rename .json)
                     if sidecar_json_bytes and getattr(self._app_config, 'sidecar_enabled', True):
-                        json_dest = final_dest + ".json"
+                        json_part = final_dest + ".json.part"
+                        json_final = final_dest + ".json"
                         try:
-                            with open(json_dest, 'xb') as jf:
+                            with open(json_part, 'xb') as jf:
                                 jf.write(sidecar_json_bytes)
+                                jf.flush()
+                                os.fsync(jf.fileno())
+                            os.rename(json_part, json_final)
                         except (FileExistsError, OSError):
-                            pass
+                            if os.path.exists(json_part):
+                                try: os.remove(json_part)
+                                except OSError: pass
 
                     # 9. 提交 COMPLETED ➔ .part 已移走，單檔完整流水線結束！
                     state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED, final_destination=final_dest)
