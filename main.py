@@ -19,7 +19,9 @@ import time
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any, Set
+import zipfile
+import media_metadata
+from typing import Optional, Callable, Dict, Any, Set, Tuple
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 import webview
@@ -2201,6 +2203,8 @@ class WebBridge:
 
         self._processor = Processor(cfg, progress_callback=self._on_progress, status_callback=self._on_status)
         threading.Thread(target=self._run_processor, daemon=True).start()
+        return {"success": True}
+
     def _process_sidecar_only_retry(self, state_mgr: Any, mid: int, m: Dict[str, Any], archive_map: Dict[int, str]) -> Tuple[bool, Optional[str]]:
         """
         Coordinator 層級 Sidecar-Only 重試處理方法 (供 Coordinator 與整合測試共同呼叫)
