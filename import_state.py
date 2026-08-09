@@ -41,7 +41,7 @@ class JobType:
 
 
 class TakeoutStateManager:
-    CURRENT_SCHEMA_VERSION = 7
+    CURRENT_SCHEMA_VERSION = 8
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -219,6 +219,41 @@ class TakeoutStateManager:
             );
             """)
 
+            # v3.0 日期歸檔兩階段交易紀錄。
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS archive_actions (
+                action_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                destination_dir TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PLANNED',
+                error_msg TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES jobs(job_id),
+                FOREIGN KEY (group_id) REFERENCES media_groups(group_id),
+                UNIQUE (job_id, group_id)
+            );
+            """)
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS archive_items (
+                item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action_id TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                destination_path TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PLANNED',
+                error_msg TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (action_id) REFERENCES archive_actions(action_id) ON DELETE CASCADE,
+                UNIQUE (action_id, source_key)
+            );
+            """)
+
             # 常用查詢索引
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_normalized_path ON members(normalized_path);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_crc_size ON members(member_crc, uncompressed_size);")
@@ -232,6 +267,8 @@ class TakeoutStateManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_review_entries_status ON review_entries(job_id, status);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_actions_job ON quarantine_actions(job_id, status);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_items_action ON quarantine_items(action_id, status);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_archive_actions_job ON archive_actions(job_id, status);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_archive_items_action ON archive_items(action_id, status);")
 
     def _migrate_db(self):
         with self._get_conn() as conn:
@@ -944,6 +981,8 @@ class TakeoutStateManager:
                     status, error_msg, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(action_id) DO UPDATE SET
+                    source_type = excluded.source_type,
+                    destination_dir = excluded.destination_dir,
                     status = excluded.status,
                     error_msg = excluded.error_msg,
                     updated_at = excluded.updated_at
@@ -1025,3 +1064,107 @@ class TakeoutStateManager:
             )
             if cursor.rowcount == 0:
                 raise KeyError(f"找不到 Quarantine item: {action_id}/{source_key}")
+
+    def upsert_archive_action(
+        self,
+        action_id: str,
+        job_id: str,
+        group_id: str,
+        source_type: str,
+        destination_dir: str,
+        status: str = "PLANNED",
+        error_msg: Optional[str] = None,
+    ) -> str:
+        """建立或更新一筆 MediaGroup 日期歸檔交易。"""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO archive_actions (
+                    action_id, job_id, group_id, source_type, destination_dir,
+                    status, error_msg, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(action_id) DO UPDATE SET
+                    source_type = excluded.source_type,
+                    destination_dir = excluded.destination_dir,
+                    status = excluded.status,
+                    error_msg = excluded.error_msg,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    action_id, job_id, group_id, source_type, destination_dir,
+                    status, error_msg, now, now,
+                ),
+            )
+        return action_id
+
+    def get_archive_action(self, action_id: str) -> Optional[Dict[str, Any]]:
+        """取得日期歸檔交易與所有逐檔狀態。"""
+        with self._get_conn() as conn:
+            action = conn.execute(
+                "SELECT * FROM archive_actions WHERE action_id = ?",
+                (action_id,),
+            ).fetchone()
+            if not action:
+                return None
+            result = dict(action)
+            result["items"] = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM archive_items WHERE action_id = ? ORDER BY item_id",
+                    (action_id,),
+                ).fetchall()
+            ]
+            return result
+
+    def upsert_archive_item(
+        self,
+        action_id: str,
+        source_key: str,
+        source_path: str,
+        destination_path: str,
+        file_size: int,
+        sha256: str,
+        status: str = "PLANNED",
+        error_msg: Optional[str] = None,
+    ) -> None:
+        """冪等登記日期歸檔逐檔計畫。"""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO archive_items (
+                    action_id, source_key, source_path, destination_path,
+                    file_size, sha256, status, error_msg, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(action_id, source_key) DO UPDATE SET
+                    status = excluded.status,
+                    error_msg = excluded.error_msg,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    action_id, source_key, source_path, destination_path,
+                    file_size, sha256, status, error_msg, now, now,
+                ),
+            )
+
+    def update_archive_item_status(
+        self,
+        action_id: str,
+        source_key: str,
+        status: str,
+        error_msg: Optional[str] = None,
+    ) -> None:
+        """更新單一日期歸檔檔案交易狀態。"""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE archive_items
+                SET status = ?, error_msg = ?, updated_at = ?
+                WHERE action_id = ? AND source_key = ?
+                """,
+                (status, error_msg, now, action_id, source_key),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(f"找不到 Archive item: {action_id}/{source_key}")
