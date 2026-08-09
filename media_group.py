@@ -44,6 +44,7 @@ class MediaGroup:
     capture_date: Optional[str] = None
     date_source: Optional[str] = None
     date_confidence: Optional[int] = None
+    date_conflict: bool = False
     status: str = "DISCOVERED"
 
 

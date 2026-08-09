@@ -38,6 +38,9 @@ class MediaAnalysisTarget:
     original_filename: Optional[str] = None
     contains_live_photo_video: bool = False
     capture_date: Optional[str] = None
+    date_source: Optional[str] = None
+    date_confidence: Optional[int] = None
+    date_conflict: bool = False
 
     @classmethod
     def from_media_group(
@@ -88,6 +91,9 @@ class MediaAnalysisTarget:
                 for member in group.members
             ),
             capture_date=group.capture_date,
+            date_source=group.date_source,
+            date_confidence=group.date_confidence,
+            date_conflict=group.date_conflict,
         )
 
     def all_media_paths(self) -> Tuple[str, ...]:

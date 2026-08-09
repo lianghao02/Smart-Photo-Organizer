@@ -41,7 +41,7 @@ class JobType:
 
 
 class TakeoutStateManager:
-    CURRENT_SCHEMA_VERSION = 6
+    CURRENT_SCHEMA_VERSION = 7
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -142,6 +142,7 @@ class TakeoutStateManager:
                 capture_date TEXT,
                 date_source TEXT,
                 date_confidence INTEGER,
+                date_conflict INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'DISCOVERED',
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (job_id) REFERENCES jobs(job_id)
@@ -242,6 +243,14 @@ class TakeoutStateManager:
                 conn.execute("ALTER TABLE archives ADD COLUMN status TEXT NOT NULL DEFAULT 'RUNNING';")
             if 'error_msg' not in arc_cols:
                 conn.execute("ALTER TABLE archives ADD COLUMN error_msg TEXT;")
+
+            cursor.execute("PRAGMA table_info(media_groups);")
+            group_cols = {row['name'] for row in cursor.fetchall()}
+            if 'date_conflict' not in group_cols:
+                conn.execute(
+                    "ALTER TABLE media_groups ADD COLUMN date_conflict "
+                    "INTEGER NOT NULL DEFAULT 0;"
+                )
 
             conn.execute("PRAGMA foreign_keys = OFF;")
             try:
@@ -658,6 +667,7 @@ class TakeoutStateManager:
         capture_date: Optional[str] = None,
         date_source: Optional[str] = None,
         date_confidence: Optional[int] = None,
+        date_conflict: bool = False,
         status: str = "DISCOVERED",
         members: Optional[List[Dict[str, Any]]] = None
     ) -> str:
@@ -673,18 +683,43 @@ class TakeoutStateManager:
                 """
                 INSERT INTO media_groups (
                     group_id, job_id, primary_member_id, source_type,
-                    capture_date, date_source, date_confidence, status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    capture_date, date_source, date_confidence, date_conflict,
+                    status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(group_id) DO UPDATE SET
                     job_id = excluded.job_id,
                     primary_member_id = excluded.primary_member_id,
                     source_type = excluded.source_type,
-                    capture_date = excluded.capture_date,
-                    date_source = excluded.date_source,
-                    date_confidence = excluded.date_confidence,
-                    status = excluded.status
+                    capture_date = COALESCE(
+                        excluded.capture_date,
+                        media_groups.capture_date
+                    ),
+                    date_source = COALESCE(
+                        excluded.date_source,
+                        media_groups.date_source
+                    ),
+                    date_confidence = COALESCE(
+                        excluded.date_confidence,
+                        media_groups.date_confidence
+                    ),
+                    date_conflict = CASE
+                        WHEN excluded.capture_date IS NULL
+                         AND excluded.date_source IS NULL
+                         AND excluded.date_confidence IS NULL
+                        THEN media_groups.date_conflict
+                        ELSE excluded.date_conflict
+                    END,
+                    status = CASE
+                        WHEN media_groups.status IN ('QUARANTINED', 'ARCHIVED')
+                        THEN media_groups.status
+                        ELSE excluded.status
+                    END
                 """,
-                (group_id, job_id, primary_member_id, source_type, capture_date, date_source, date_confidence, status, now)
+                (
+                    group_id, job_id, primary_member_id, source_type,
+                    capture_date, date_source, date_confidence,
+                    int(bool(date_conflict)), status, now,
+                )
             )
 
             conn.execute("DELETE FROM media_group_members WHERE group_id = ?", (group_id,))
