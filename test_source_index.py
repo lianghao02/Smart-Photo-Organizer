@@ -78,7 +78,7 @@ class TestSourceIndex(unittest.TestCase):
             os.symlink(real_file, link_file)
             has_symlink = True
         except (OSError, NotImplementedError, AttributeError):
-            pass
+            self.skipTest("目前 Windows 權限無法建立 Symlink／Reparse Point，明確略過正向攔截測試")
 
         if has_symlink:
             self.assertTrue(is_reparse_point_or_link(link_file))

@@ -8,12 +8,15 @@ import os
 import sys
 import shutil
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
 PROJECT_ROOT = str(Path(__file__).resolve().parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+sys.modules.setdefault("webview", types.ModuleType("webview"))
 
 import main as app_main
 from source_index import SourceItem
@@ -167,19 +170,36 @@ class TestProcessorSidecarIntegration(unittest.TestCase):
         self.dst_dir = os.path.join(self.test_dir, "dst")
         os.makedirs(self.src_dir, exist_ok=True)
         os.makedirs(self.dst_dir, exist_ok=True)
-        self.processor = app_main.Processor({'mode': 'copy', 'sidecar_enabled': True}, None)
+        self.processor = app_main.Processor({
+            'mode': 'copy',
+            'sidecar_enabled': True,
+            'src_root': self.src_dir,
+        }, None)
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_processor_and_sidecar_matcher_consistency(self):
         """證明 Processor._get_sidecar_pairs 與 SidecarMatcher 對截斷 Supplemental Metadata、大小寫及複數 Sidecar 產生一致結果"""
-        # 1. 截斷 Supplemental Metadata 案例
+        # 先建立完整任務素材，再觸發一次性索引；任務執行期間來源集合不再新增。
         img_p = os.path.join(self.src_dir, "vacation.png")
         json_supp = os.path.join(self.src_dir, "vacation.png.supplemental-metada.json")
         with open(img_p, 'wb') as f: f.write(b"png bytes")
         with open(json_supp, 'wb') as f: f.write(b"json bytes")
 
+        img_case = os.path.join(self.src_dir, "PHOTO.JPG")
+        json_case = os.path.join(self.src_dir, "photo.jpg.json")
+        with open(img_case, 'wb') as f: f.write(b"jpg bytes")
+        with open(json_case, 'wb') as f: f.write(b"json bytes")
+
+        img_multi = os.path.join(self.src_dir, "multi.jpg")
+        json_full = os.path.join(self.src_dir, "multi.jpg.json")
+        json_stem = os.path.join(self.src_dir, "multi.json")
+        with open(img_multi, 'wb') as f: f.write(b"jpg bytes")
+        with open(json_full, 'wb') as f: f.write(b"json full")
+        with open(json_stem, 'wb') as f: f.write(b"json stem")
+
+        # 1. 截斷 Supplemental Metadata 案例
         dst_img = os.path.join(self.dst_dir, "2018/vacation.png")
         pairs = self.processor._get_sidecar_pairs(img_p, dst_img)
         self.assertEqual(len(pairs), 1)
@@ -187,23 +207,12 @@ class TestProcessorSidecarIntegration(unittest.TestCase):
         self.assertTrue(pairs[0][1].endswith(".supplemental-metadata.json"))
 
         # 2. 大小寫相容案例
-        img_case = os.path.join(self.src_dir, "PHOTO.JPG")
-        json_case = os.path.join(self.src_dir, "photo.jpg.json")
-        with open(img_case, 'wb') as f: f.write(b"jpg bytes")
-        with open(json_case, 'wb') as f: f.write(b"json bytes")
-
         dst_case = os.path.join(self.dst_dir, "2018/PHOTO.JPG")
         pairs_case = self.processor._get_sidecar_pairs(img_case, dst_case)
         self.assertEqual(len(pairs_case), 1)
         self.assertEqual(pairs_case[0][0], json_case)
 
         # 3. 複數 Sidecar (全檔名 + 裸 stem) 完整跟隨案例
-        img_multi = os.path.join(self.src_dir, "multi.jpg")
-        json_full = os.path.join(self.src_dir, "multi.jpg.json")
-        json_stem = os.path.join(self.src_dir, "multi.json")
-        with open(img_multi, 'wb') as f: f.write(b"jpg bytes")
-        with open(json_full, 'wb') as f: f.write(b"json full")
-        with open(json_stem, 'wb') as f: f.write(b"json stem")
 
         dst_multi = os.path.join(self.dst_dir, "2018/multi.jpg")
         pairs_multi = self.processor._get_sidecar_pairs(img_multi, dst_multi)
@@ -213,10 +222,17 @@ class TestProcessorSidecarIntegration(unittest.TestCase):
         self.assertIn(json_stem, pair_srcs)
 
     def test_processor_task_level_json_exclusivity(self):
-        """證明 Processor 透過任務層級 Sidecar 索引維護 JSON 獨佔性，避免 photo.jpg 與 photo.heic 搶奪同一 photo.json」"""
-        jpg_p = os.path.join(self.src_dir, "photo.jpg")
-        heic_p = os.path.join(self.src_dir, "photo.heic")
-        json_p = os.path.join(self.src_dir, "photo.json")
+        """證明跨子資料夾仍共用一份任務索引，避免兩個媒體搶奪同一 JSON。"""
+        jpg_dir = os.path.join(self.src_dir, "A")
+        heic_dir = os.path.join(self.src_dir, "B")
+        json_dir = os.path.join(self.src_dir, "C")
+        os.makedirs(jpg_dir, exist_ok=True)
+        os.makedirs(heic_dir, exist_ok=True)
+        os.makedirs(json_dir, exist_ok=True)
+
+        jpg_p = os.path.join(jpg_dir, "photo.jpg")
+        heic_p = os.path.join(heic_dir, "photo.heic")
+        json_p = os.path.join(json_dir, "photo.json")
 
         with open(jpg_p, 'wb') as f: f.write(b"jpg content")
         with open(heic_p, 'wb') as f: f.write(b"heic content")

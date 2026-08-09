@@ -58,7 +58,11 @@ class SidecarMatcher:
         return False
 
     @classmethod
-    def match_sources(cls, items: List[SourceItem]) -> MatchOutcome:
+    def match_sources(
+        cls,
+        items: List[SourceItem],
+        allow_multiple_per_media: bool = False,
+    ) -> MatchOutcome:
         """
         對輸入的 SourceItem 列表進行全域階段式 (Phase-by-Phase) 優先序 Sidecar 配對。
         規則：
@@ -127,6 +131,8 @@ class SidecarMatcher:
 
         assigned_json_keys: Set[str] = set()
         ambiguous_json_keys: Set[str] = set()
+        matched_media_keys: Set[str] = set()
+        ambiguous_media_keys: Set[str] = set()
 
         # 決定性排序
         media_items.sort(key=lambda x: x.source_key)
@@ -134,6 +140,23 @@ class SidecarMatcher:
 
         def get_unassigned(cands: List[SourceItem]) -> List[SourceItem]:
             return [c for c in cands if c.source_key not in assigned_json_keys and c.source_key not in ambiguous_json_keys]
+
+        def record_match(media: SourceItem, json_item: SourceItem, quality: str, reason: str) -> None:
+            assigned_json_keys.add(json_item.source_key)
+            matched_media_keys.add(media.source_key)
+            outcome.matched_pairs.append(SidecarMatch(
+                media_item=media,
+                json_item=json_item,
+                match_quality=quality,
+                reason=reason,
+            ))
+
+        def record_ambiguity(media: SourceItem, candidates: List[SourceItem]) -> None:
+            if media.source_key not in ambiguous_media_keys:
+                outcome.ambiguous_media.append(media)
+                ambiguous_media_keys.add(media.source_key)
+            for candidate in candidates:
+                ambiguous_json_keys.add(candidate.source_key)
 
         # -------------------------------------------------------------
         # Phase 1 (P1): 同封存檔/同目錄、全媒體檔名 + .json
@@ -146,18 +169,14 @@ class SidecarMatcher:
                 cands = [c for c in json_by_logical_path[p1_key] if cls.is_same_archive(media, c)]
                 valid_cands = get_unassigned(cands)
                 if len(valid_cands) == 1:
-                    assigned_json_keys.add(valid_cands[0].source_key)
-                    outcome.matched_pairs.append(SidecarMatch(
-                        media_item=media,
-                        json_item=valid_cands[0],
-                        match_quality="EXACT_FULL_PATH",
-                        reason="同封存檔全檔名精準配對 (.jpg.json)"
-                    ))
+                    record_match(media, valid_cands[0], "EXACT_FULL_PATH", "同封存檔全檔名精準配對 (.jpg.json)")
+                    if allow_multiple_per_media:
+                        next_active.append(media)
                     continue
                 elif len(valid_cands) > 1:
-                    outcome.ambiguous_media.append(media)
-                    for c in valid_cands:
-                        ambiguous_json_keys.add(c.source_key)
+                    record_ambiguity(media, valid_cands)
+                    if allow_multiple_per_media:
+                        next_active.append(media)
                     continue
             next_active.append(media)
         active_media = next_active
@@ -186,18 +205,14 @@ class SidecarMatcher:
             valid_cands = list(unique_p2.values())
 
             if len(valid_cands) == 1:
-                assigned_json_keys.add(valid_cands[0].source_key)
-                outcome.matched_pairs.append(SidecarMatch(
-                    media_item=media,
-                    json_item=valid_cands[0],
-                    match_quality="EXACT_FULL_PATH_SUPPLEMENTAL",
-                    reason="同封存檔 Supplemental Metadata 配對"
-                ))
+                record_match(media, valid_cands[0], "EXACT_FULL_PATH_SUPPLEMENTAL", "同封存檔 Supplemental Metadata 配對")
+                if allow_multiple_per_media:
+                    next_active.append(media)
                 continue
             elif len(valid_cands) > 1:
-                outcome.ambiguous_media.append(media)
-                for c in valid_cands:
-                    ambiguous_json_keys.add(c.source_key)
+                record_ambiguity(media, valid_cands)
+                if allow_multiple_per_media:
+                    next_active.append(media)
                 continue
 
             next_active.append(media)
@@ -224,18 +239,14 @@ class SidecarMatcher:
                         valid_cands = []
 
                 if len(valid_cands) == 1:
-                    assigned_json_keys.add(valid_cands[0].source_key)
-                    outcome.matched_pairs.append(SidecarMatch(
-                        media_item=media,
-                        json_item=valid_cands[0],
-                        match_quality="BASE_STEM",
-                        reason="同封存檔裸 stem 配對 (.json)"
-                    ))
+                    record_match(media, valid_cands[0], "BASE_STEM", "同封存檔裸 stem 配對 (.json)")
+                    if allow_multiple_per_media:
+                        next_active.append(media)
                     continue
                 elif len(valid_cands) > 1:
-                    outcome.ambiguous_media.append(media)
-                    for c in valid_cands:
-                        ambiguous_json_keys.add(c.source_key)
+                    record_ambiguity(media, valid_cands)
+                    if allow_multiple_per_media:
+                        next_active.append(media)
                     continue
             next_active.append(media)
         active_media = next_active
@@ -267,18 +278,14 @@ class SidecarMatcher:
                 valid_cands = list(unique_p4.values())
 
                 if len(valid_cands) == 1:
-                    assigned_json_keys.add(valid_cands[0].source_key)
-                    outcome.matched_pairs.append(SidecarMatch(
-                        media_item=media,
-                        json_item=valid_cands[0],
-                        match_quality="NUMBERED_VARIANT",
-                        reason="Google Takeout 重複編號變體配對"
-                    ))
+                    record_match(media, valid_cands[0], "NUMBERED_VARIANT", "Google Takeout 重複編號變體配對")
+                    if allow_multiple_per_media:
+                        next_active.append(media)
                     continue
                 elif len(valid_cands) > 1:
-                    outcome.ambiguous_media.append(media)
-                    for c in valid_cands:
-                        ambiguous_json_keys.add(c.source_key)
+                    record_ambiguity(media, valid_cands)
+                    if allow_multiple_per_media:
+                        next_active.append(media)
                     continue
 
             next_active.append(media)
@@ -295,18 +302,14 @@ class SidecarMatcher:
                 cands = [c for c in json_by_logical_path[p5_key] if not cls.is_same_archive(media, c)]
                 valid_cands = get_unassigned(cands)
                 if len(valid_cands) == 1:
-                    assigned_json_keys.add(valid_cands[0].source_key)
-                    outcome.matched_pairs.append(SidecarMatch(
-                        media_item=media,
-                        json_item=valid_cands[0],
-                        match_quality="CROSS_ZIP_EXACT",
-                        reason="跨 ZIP 相同邏輯路徑配對"
-                    ))
+                    record_match(media, valid_cands[0], "CROSS_ZIP_EXACT", "跨 ZIP 相同邏輯路徑配對")
+                    if allow_multiple_per_media:
+                        next_active.append(media)
                     continue
                 elif len(valid_cands) > 1:
-                    outcome.ambiguous_media.append(media)
-                    for c in valid_cands:
-                        ambiguous_json_keys.add(c.source_key)
+                    record_ambiguity(media, valid_cands)
+                    if allow_multiple_per_media:
+                        next_active.append(media)
                     continue
             next_active.append(media)
         active_media = next_active
@@ -332,24 +335,20 @@ class SidecarMatcher:
             valid_cands = list(unique_p6.values())
 
             if len(valid_cands) == 1:
-                assigned_json_keys.add(valid_cands[0].source_key)
-                outcome.matched_pairs.append(SidecarMatch(
-                    media_item=media,
-                    json_item=valid_cands[0],
-                    match_quality="FILENAME_MATCH",
-                    reason="跨目錄單一檔名備用配對"
-                ))
+                record_match(media, valid_cands[0], "FILENAME_MATCH", "跨目錄單一檔名備用配對")
                 continue
             elif len(valid_cands) > 1:
-                outcome.ambiguous_media.append(media)
-                for c in valid_cands:
-                    ambiguous_json_keys.add(c.source_key)
+                record_ambiguity(media, valid_cands)
                 continue
 
             next_active.append(media)
 
         # 整理未配對媒體與 JSON
-        outcome.unmatched_media = list(next_active)
+        outcome.unmatched_media = [
+            media for media in next_active
+            if media.source_key not in matched_media_keys
+            and media.source_key not in ambiguous_media_keys
+        ]
         for j in json_items:
             if j.source_key in ambiguous_json_keys:
                 outcome.ambiguous_json.append(j)

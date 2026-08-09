@@ -22,7 +22,7 @@ from pathlib import Path
 import zipfile
 import media_metadata
 from media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA, EXT_JUNK
-from source_index import SourceItem
+from source_index import FolderSourceIndexer
 from sidecar_matcher import SidecarMatcher
 from typing import Optional, Callable, Dict, Any, Set, Tuple
 import tkinter as tk
@@ -1187,6 +1187,9 @@ class Processor:
         self.dedup_lock   = threading.Lock()
         self.preview_lock = threading.Lock()
         self.date_audit_lock = threading.Lock()
+        self.sidecar_index_lock = threading.Lock()
+        self._sidecar_outcome = None
+        self._sidecar_index_root: Optional[str] = None
         
         # 自動偵測 OneDrive 路徑以強制開啟保護
         self.onedrive_protect = self.config.get('onedrive_protect', False)
@@ -1221,6 +1224,11 @@ class Processor:
             self.source_files_set = set(os.path.abspath(f) for f in all_files)
             total_count = len(all_files)
             with self.stats_lock: self.stats['total_size'] = total_size
+
+            # Sidecar 必須以整個任務來源根目錄建立一次性索引，避免父子資料夾
+            # 各自重建重疊索引，造成同一 JSON 被重複指派。
+            if self.config.get('sidecar_enabled', True):
+                self._prepare_folder_sidecar_outcome(src_root)
 
             if total_count == 0:
                 self.logger.warn("⚠️ 找不到任何檔案。")
@@ -1829,16 +1837,24 @@ class Processor:
         self._transfer_sidecars(sidecar_pairs, tag)
         if self.config['resume_enabled']: self._hist_update(src, dst)
 
-    def _get_folder_sidecar_outcome(self, src_dir: str):
-        """一次性建立資料夾層級的唯讀來源索引與 SidecarMatcher 全域配對結果 (快取於 Processor 實體中)"""
-        if not hasattr(self, '_sidecar_outcomes'):
-            self._sidecar_outcomes = {}
+    def _prepare_folder_sidecar_outcome(self, root_dir: str):
+        """以任務來源根目錄建立一次性 Sidecar 配對索引。"""
+        abs_root = os.path.abspath(root_dir)
+        with self.sidecar_index_lock:
+            if self._sidecar_outcome is None or self._sidecar_index_root != abs_root:
+                items = FolderSourceIndexer.index_folder(abs_root)
+                self._sidecar_outcome = SidecarMatcher.match_sources(
+                    items,
+                    allow_multiple_per_media=True,
+                )
+                self._sidecar_index_root = abs_root
+        return self._sidecar_outcome
 
-        abs_dir = os.path.abspath(src_dir)
-        if abs_dir not in self._sidecar_outcomes:
-            items = FolderSourceIndexer.index_folder(abs_dir)
-            self._sidecar_outcomes[abs_dir] = SidecarMatcher.match_sources(items)
-        return self._sidecar_outcomes[abs_dir]
+    def _get_folder_sidecar_outcome(self, src_dir: str):
+        """取得任務層級配對索引；未經 start() 的單元測試才以來源目錄降級建立。"""
+        configured_root = self.config.get('src_root', '')
+        root_dir = configured_root if configured_root and os.path.isdir(configured_root) else src_dir
+        return self._prepare_folder_sidecar_outcome(root_dir)
 
     def _get_sidecar_pairs(self, src: str, dst: str) -> list[tuple[str, str]]:
         """取得與媒體明確配對的 JSON Sidecar，透過任務層級一次性配對索引查詢，確保 JSON 任務獨佔性與高執行效能。"""
