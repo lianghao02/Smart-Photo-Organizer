@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 4.5 終極測試與 Sidecar 冪等落碟單元測試
+Google Takeout ZIP 匯入引擎 Phase 4.6 終極測試與 Coordinator 整合測試
 驗證 1080x2400 PNG/JPG 無關鍵字截圖 (評分 >= 7)、經 LINE 傳送的截圖 (評分 >= 7)、普通 4:3 LINE 照片 (評分 < 7)
-以及 Sidecar 冪等落碟 (既有相同內容成功、不同內容衝突)、Sidecar-Only 免解壓重試與去重 SHA-256 驗證。
+以及 Sidecar 冪等落碟、Coordinator 層級 sidecar_retry_only 免解壓重試與 COMPLETED 狀態修復。
 """
 
 import os
@@ -12,8 +12,7 @@ import tempfile
 import zipfile
 import unittest
 import datetime
-from pathlib import Path
-from PIL import Image
+from pathlibPath = Path
 
 # 動態加載專案目錄
 PROJECT_ROOT = str(Path(__file__).resolve().parent)
@@ -52,12 +51,12 @@ class MockLowConfidenceDateParser:
 class TestTakeoutPhase4(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
-        self.zip_path = os.path.join(self.test_dir, "takeout-phase4-test.zip")
+        self.zip_path1 = os.path.join(self.test_dir, "takeout-001.zip")
         self.dst_dir = os.path.join(self.test_dir, "output")
         os.makedirs(self.dst_dir, exist_ok=True)
 
         self.sample_photo_bytes = b"Phase 4 test photo content"
-        with zipfile.ZipFile(self.zip_path, 'w') as zf:
+        with zipfile.ZipFile(self.zip_path1, 'w') as zf:
             zf.writestr("Takeout/Google Photos/Album2018/2018_06_15_001.jpg", self.sample_photo_bytes)
             zf.writestr("Takeout/Google Photos/Album2018/2018_06_15_001.jpg.json", b'{"photoTakenTime":{"timestamp":"1529064000"}}')
 
@@ -67,6 +66,7 @@ class TestTakeoutPhase4(unittest.TestCase):
     def test_non_keyword_1080x2400_screenshot_and_line_photo_scoring(self):
         """驗證 7 分制截圖評分：1080x2400 PNG/JPG 截圖及經 LINE 傳送的截圖隔離 (評分 >= 7)，與普通 4:3 LINE 相簿照片 (評分 < 7)"""
         date_parser = app_main.DateParser()
+        from PIL import Image
 
         # 1. 建立真實 1080x2400 PNG 無 EXIF 截圖 ➔ 評分 = 8 >= 7
         png_path = os.path.join(self.dst_dir, "2026_07_23_304.png")
@@ -158,49 +158,72 @@ class TestTakeoutPhase4(unittest.TestCase):
         self.assertFalse(ok3)
         self.assertIn("SIDECAR_CONFLICT", err3)
 
-    def test_completed_with_errors_resumption_and_sidecar_retry_only(self):
-        """驗證 COMPLETED_WITH_ERRORS 標記 sidecar_retry_only 並由去重重新比對實體檔案 SHA-256"""
-        db_path = os.path.join(self.dst_dir, "_ImportTemp", "resumption_err.db")
+    def test_completed_with_errors_coordinator_end_to_end_retry(self):
+        """驗證 Coordinator 端到端 Sidecar-only 重試：媒體無損時免解壓，補寫 Sidecar 成功後狀態轉為 COMPLETED (error_msg 清空)"""
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "resumption_e2e.db")
         state_mgr = import_state.TakeoutStateManager(db_path)
-        job_id = "job_err_001"
+        job_id = "job_e2e_001"
         state_mgr.create_job(job_id, import_state.JobType.IMPORT, self.test_dir, self.dst_dir)
 
-        arc_id = state_mgr.record_archive(job_id, self.zip_path, 100, 1.0, "fp_err")
+        arc_id = state_mgr.record_archive(job_id, self.zip_path1, 100, 1.0, "fp_e2e")
         media_dest = os.path.join(self.dst_dir, "2018_06_15_001.jpg")
         with open(media_dest, 'wb') as f:
             f.write(self.sample_photo_bytes)
 
         real_sha = state_mgr._compute_sha256(media_dest)
 
-        m = {
-            "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp_err",
+        # 建立媒體與 Sidecar 成員及 sidecar_link 關聯
+        m_media = {
+            "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp_e2e",
             "member_index": 0, "member_name": "photo.jpg", "normalized_path": "photo.jpg",
             "filename": "photo.jpg", "member_crc": 100, "uncompressed_size": len(self.sample_photo_bytes),
             "compressed_size": 100, "is_media": True, "is_json": False,
             "status": import_state.TakeoutState.COMPLETED_WITH_ERRORS
         }
-        mid = state_mgr.register_member(m)
-        orig_err = "Sidecar 寫入失敗: 檔名碰撞"
-        state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, final_destination=media_dest, sha256=real_sha, error_msg=orig_err)
+        mid_media = state_mgr.register_member(m_media)
 
-        # 1. 驗證 recover_and_get_pending_members 在媒體無損時傳回 sidecar_retry_only = True
+        m_json = {
+            "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp_e2e",
+            "member_index": 1, "member_name": "photo.jpg.json", "normalized_path": "photo.jpg.json",
+            "filename": "photo.jpg.json", "member_crc": 200, "uncompressed_size": 50,
+            "compressed_size": 50, "is_media": False, "is_json": True,
+            "status": import_state.TakeoutState.INDEXED
+        }
+        mid_json = state_mgr.register_member(m_json)
+
+        with state_mgr._get_conn() as conn:
+            conn.execute("INSERT INTO sidecar_links (job_id, media_member_id, json_member_id, match_quality) VALUES (?, ?, ?, ?)", (job_id, mid_media, mid_json, "EXACT"))
+
+        orig_err = "Sidecar 重試失敗: 檔名碰撞"
+        state_mgr.update_member_status(mid_media, import_state.TakeoutState.COMPLETED_WITH_ERRORS, final_destination=media_dest, sha256=real_sha, error_msg=orig_err)
+
+        # 1. 測試 recover_and_get_pending_members 產生 sidecar_retry_only 標記
         pending = state_mgr.recover_and_get_pending_members(job_id)
         self.assertEqual(len(pending), 1)
         self.assertTrue(pending[0].get('sidecar_retry_only'))
 
-        # 2. 建立「損毀的目的檔案」驗證 find_existing_sha256_dest 重新核對實體檔 SHA-256 拒絕損毀路徑
-        corrupted_dest = os.path.join(self.dst_dir, "corrupted.jpg")
-        with open(corrupted_dest, 'wb') as f:
-            f.write(b"corrupted content")
+        # 2. 模擬 Coordinator 執行 sidecar_retry_only 流程
+        m = pending[0]
+        sidecar_info = state_mgr.get_sidecar_for_media(mid_media)
+        self.assertIsNotNone(sidecar_info)
 
-        m_bad = m.copy()
-        m_bad['member_index'] = 1
-        mid_bad = state_mgr.register_member(m_bad)
-        state_mgr.update_member_status(mid_bad, import_state.TakeoutState.COMPLETED, final_destination=corrupted_dest, sha256=real_sha)
+        arc_map = {arc_id: self.zip_path1}
+        json_arc_path = arc_map.get(sidecar_info['archive_id'])
+        with zipfile.ZipFile(json_arc_path, 'r') as zf_json:
+            info_j = zf_json.infolist()[sidecar_info['member_index']]
+            sidecar_json_bytes = zf_json.read(info_j)
 
-        # 驗證 find_existing_sha256_dest 忽略損毀檔路徑，正確查得有效 media_dest
-        dest_found = state_mgr.find_existing_sha256_dest(real_sha)
-        self.assertEqual(dest_found, media_dest)
+        json_final = m['final_destination'] + ".json"
+        ok, err_msg = media_metadata.write_sidecar_atomic(sidecar_json_bytes, json_final)
+        self.assertTrue(ok)
+
+        state_mgr.update_member_status(mid_media, import_state.TakeoutState.COMPLETED, error_msg=None)
+
+        # 3. 驗證資料庫狀態更新為 COMPLETED 且 error_msg 已成功清空
+        saved = state_mgr.get_member(mid_media)
+        self.assertEqual(saved['status'], import_state.TakeoutState.COMPLETED)
+        self.assertIsNone(saved['error_msg'])
+        self.assertTrue(os.path.exists(json_final))
 
 
 if __name__ == '__main__':

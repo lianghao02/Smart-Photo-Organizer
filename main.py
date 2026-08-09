@@ -2341,8 +2341,10 @@ class WebBridge:
                                 with zipfile.ZipFile(json_arc_path, 'r') as zf_json:
                                     info_j = zf_json.infolist()[sidecar_info['member_index']]
                                     sidecar_json_bytes = zf_json.read(info_j)
-                            except Exception:
-                                pass
+                            except Exception as e_zip:
+                                err_zip_msg = f"讀取 Sidecar ZIP 封存檔失敗 [{os.path.basename(json_arc_path)}]: {e_zip}"
+                                self._on_log(f"⚠️ {err_zip_msg} [{m['filename']}]", "warning")
+                                state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, error_msg=err_zip_msg)
 
                         if sidecar_json_bytes and getattr(self._app_config, 'sidecar_enabled', True):
                             json_final = m['final_destination'] + ".json"
@@ -2354,7 +2356,9 @@ class WebBridge:
                                 archived_count += 1
                                 continue
                             else:
-                                self._on_log(f"⚠️ Sidecar JSON 補寫失敗 [{m['filename']}]: {err_msg}", "warning")
+                                err_sc_msg = f"Sidecar 重試失敗: {err_msg}"
+                                self._on_log(f"⚠️ {err_sc_msg} [{m['filename']}]", "warning")
+                                state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, error_msg=err_sc_msg)
                                 pipeline_errors += 1
                                 continue
                     if not sidecar_retry_success:
