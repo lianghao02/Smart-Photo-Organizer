@@ -287,6 +287,7 @@ class ReviewWorkspaceManager:
     def validate_registered_shortcut(
         self,
         shortcut_path: str,
+        require_target_exists: bool = True,
     ) -> Tuple[bool, Optional[ReviewEntry], Optional[str]]:
         """解析 `.lnk` 並同時核對 Review 根目錄、SQLite 登記與允許目標範圍。"""
         shortcut_path = self._absolute(shortcut_path)
@@ -309,6 +310,6 @@ class ReviewWorkspaceManager:
             return False, None, "捷徑目標與 SQLite 登記不一致"
         if not self._target_is_allowed(resolved):
             return False, None, "捷徑目標超出允許範圍"
-        if not os.path.isfile(resolved):
+        if require_target_exists and not os.path.isfile(resolved):
             return False, None, "捷徑目標不存在或不是檔案"
         return True, self._entry_from_record(record), None

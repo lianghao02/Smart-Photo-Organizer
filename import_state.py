@@ -41,7 +41,7 @@ class JobType:
 
 
 class TakeoutStateManager:
-    CURRENT_SCHEMA_VERSION = 5
+    CURRENT_SCHEMA_VERSION = 6
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -183,6 +183,41 @@ class TakeoutStateManager:
             );
             """)
 
+            # v3.0 Quarantine 兩階段交易紀錄。
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS quarantine_actions (
+                action_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                destination_dir TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PLANNED',
+                error_msg TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES jobs(job_id),
+                FOREIGN KEY (group_id) REFERENCES media_groups(group_id),
+                UNIQUE (job_id, group_id)
+            );
+            """)
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS quarantine_items (
+                item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action_id TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                destination_path TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PLANNED',
+                error_msg TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (action_id) REFERENCES quarantine_actions(action_id) ON DELETE CASCADE,
+                UNIQUE (action_id, source_key)
+            );
+            """)
+
             # 常用查詢索引
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_normalized_path ON members(normalized_path);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_crc_size ON members(member_crc, uncompressed_size);")
@@ -194,6 +229,8 @@ class TakeoutStateManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_review_entries_job ON review_entries(job_id);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_review_entries_group ON review_entries(group_id);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_review_entries_status ON review_entries(job_id, status);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_actions_job ON quarantine_actions(job_id, status);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_items_action ON quarantine_items(action_id, status);")
 
     def _migrate_db(self):
         with self._get_conn() as conn:
@@ -733,6 +770,16 @@ class TakeoutStateManager:
         """向下相容 Phase 2 初版方法名稱。"""
         return self.list_media_groups(job_id)
 
+    def update_media_group_status(self, job_id: str, group_id: str, status: str) -> None:
+        """更新單一 Job 內的 MediaGroup 狀態。"""
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                "UPDATE media_groups SET status = ? WHERE group_id = ? AND job_id = ?",
+                (status, group_id, job_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(f"找不到 MediaGroup: {job_id}/{group_id}")
+
     def upsert_review_entry(
         self,
         review_entry_id: str,
@@ -828,3 +875,118 @@ class TakeoutStateManager:
             )
             if cursor.rowcount == 0:
                 raise KeyError(f"找不到 ReviewEntry: {review_entry_id}")
+
+    def update_group_review_status(self, job_id: str, group_id: str, status: str) -> None:
+        """同步更新同一 MediaGroup 的所有審核分類狀態。"""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                UPDATE review_entries
+                SET status = ?, error_msg = NULL, updated_at = ?
+                WHERE job_id = ? AND group_id = ?
+                """,
+                (status, now, job_id, group_id),
+            )
+
+    def upsert_quarantine_action(
+        self,
+        action_id: str,
+        job_id: str,
+        group_id: str,
+        source_type: str,
+        destination_dir: str,
+        status: str = "PLANNED",
+        error_msg: Optional[str] = None,
+    ) -> str:
+        """建立或更新一筆 Quarantine 群組交易。"""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO quarantine_actions (
+                    action_id, job_id, group_id, source_type, destination_dir,
+                    status, error_msg, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(action_id) DO UPDATE SET
+                    status = excluded.status,
+                    error_msg = excluded.error_msg,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    action_id, job_id, group_id, source_type, destination_dir,
+                    status, error_msg, now, now,
+                ),
+            )
+        return action_id
+
+    def get_quarantine_action(self, action_id: str) -> Optional[Dict[str, Any]]:
+        """取得 Quarantine 交易與逐檔狀態。"""
+        with self._get_conn() as conn:
+            action = conn.execute(
+                "SELECT * FROM quarantine_actions WHERE action_id = ?",
+                (action_id,),
+            ).fetchone()
+            if not action:
+                return None
+            result = dict(action)
+            result["items"] = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM quarantine_items WHERE action_id = ? ORDER BY item_id",
+                    (action_id,),
+                ).fetchall()
+            ]
+            return result
+
+    def upsert_quarantine_item(
+        self,
+        action_id: str,
+        source_key: str,
+        source_path: str,
+        destination_path: str,
+        file_size: int,
+        sha256: str,
+        status: str = "PLANNED",
+        error_msg: Optional[str] = None,
+    ) -> None:
+        """冪等登記 Quarantine 逐檔計畫。"""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO quarantine_items (
+                    action_id, source_key, source_path, destination_path,
+                    file_size, sha256, status, error_msg, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(action_id, source_key) DO UPDATE SET
+                    status = excluded.status,
+                    error_msg = excluded.error_msg,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    action_id, source_key, source_path, destination_path,
+                    file_size, sha256, status, error_msg, now, now,
+                ),
+            )
+
+    def update_quarantine_item_status(
+        self,
+        action_id: str,
+        source_key: str,
+        status: str,
+        error_msg: Optional[str] = None,
+    ) -> None:
+        """更新單一 Quarantine 檔案交易狀態。"""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE quarantine_items
+                SET status = ?, error_msg = ?, updated_at = ?
+                WHERE action_id = ? AND source_key = ?
+                """,
+                (status, error_msg, now, action_id, source_key),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(f"找不到 Quarantine item: {action_id}/{source_key}")

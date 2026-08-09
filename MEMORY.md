@@ -18,6 +18,8 @@
 - ZIP 審核快取必須固定在 `_ReviewCache/<job_id>/<group_id>`，呼叫端不得自訂任意 cache 路徑。
 - 完全重複必須比較整個 MediaGroup 的所有非 JSON 媒體；Live Photo／RAW 成員未完整實體化時禁止降級成只比較主照片。
 - Takeout 截圖評分與捷徑顯示必須沿用原始檔名，不可使用 UUID 或 `.part` 快取名稱作為證據。
+- Quarantine 跨磁碟搬移採「整組先複製驗證、全部成功後才移除來源」；不可逐檔直接 move，否則中斷會拆散 MediaGroup。
+- Quarantine 續傳不能依賴捷徑目標仍存在；來源可能已在前次交易部分移除，必須以 SQLite action/item 與已驗證目的檔恢復。
 
 ## 📦 外部依賴追蹤
 
@@ -51,3 +53,4 @@
 - 2026-08-09：完成 v3.0 Phase 2 Codex 獨立複查；收斂 Live Photo／RAW 配對範圍，補上跨 ZIP、跨任務與 SQLite 冪等防護。
 - 2026-08-09：完成 v3.0 Phase 3 Review Workspace 骨架；確立 SQLite 權威 ReviewEntry、零覆寫捷徑與允許根目錄驗證。
 - 2026-08-09：完成 v3.0 Phase 4 審核分類器；重複、模糊與截圖只建立 ReviewEntry／捷徑，不再作為 v3 流程的直接搬移指令。
+- 2026-08-09：完成 v3.0 Phase 5 Quarantine 兩階段交易；支援跨磁碟、群組原子性、SHA-256 驗證與中斷續傳。
