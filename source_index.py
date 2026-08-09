@@ -55,6 +55,7 @@ class SourceItem:
     archive_fingerprint: Optional[str] = None # 封存檔指紋
     member_index: Optional[int] = None        # ZIP 成員索引
     member_crc: Optional[int] = None          # ZIP 成員 CRC32
+    archive_member_name: Optional[str] = None # ZIP 中央目錄原始名稱（供解壓雙重核對）
 
 
 class FolderSourceIndexer:
@@ -167,7 +168,8 @@ class TakeoutSourceIndexer:
                     archive_path=os.path.abspath(zip_p),
                     archive_fingerprint=fp,
                     member_index=m["member_index"],
-                    member_crc=m["member_crc"]
+                    member_crc=m["member_crc"],
+                    archive_member_name=m["member_name"]
                 )
                 all_items.append(item)
 

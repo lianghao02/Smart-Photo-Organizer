@@ -1,34 +1,68 @@
-# 📸 智慧相片自動分類助手 Smart-Photo-Organizer (v2.9 Pro Web)
+# 智慧照片整理助手 Smart-Photo-Organizer v3.0
 
-> 影片日期會優先讀取 MP4／MOV 等容器內的拍攝後設資料（QuickTime `creationdate`、`creation_time`），再依 Windows 媒體建立日期、檔名與檔案建立時間回退。若要精準解析影片，請安裝 FFmpeg 並確保 `ffprobe` 可由命令列執行；也可用 `FFPROBE_PATH` 環境變數指定完整路徑。
+Smart-Photo-Organizer 是 Windows 本機照片清理與日期歸檔工具，支援一般資料夾、外接硬碟，以及已下載至本機的 Google Takeout ZIP。
 
-> 啟用智慧截圖辨識後，系統會依檔名、相機 EXIF、螢幕尺寸與畫面比例計分。分數達 **7 分**的螢幕截圖或監視器畫面會移至 `_Excluded/Screenshots`；低於 7 分則維持一般年月歸檔。
+v3.0 採「先分析、人工審核、最後處理」流程。按下「開始分析」只會建立索引、SQLite 狀態、報表與 Windows 捷徑，不會搬移、刪除或改名來源媒體；原始 Takeout ZIP 永遠唯讀。
 
-> 日期判斷會收集 EXIF、Google Takeout JSON、影片容器、Windows 媒體屬性、檔名與檔案建立時間，再依可信度選擇。若兩個高可信來源的年份不同，檔案會移至 `_Review/DateConflict`，並產生 `date_audit.csv` 供人工稽核。
+## 核心安全規則
 
-> 程式產生的日期流水號、`DUP_*`、`Shot_*` 等檔名不會被當成日期證據；最高日期可信度低於 50 分時，檔案會移至 `_Review/LowConfidenceDate`，避免錯誤日期在重跑後自我強化。
+- `_Review/01`～`06` 只包含 `.lnk` 捷徑，刪除或移動這些捷徑不影響原始檔。
+- 只有放入 `_Review/99_待刪除` 的已登記捷徑，才可在預覽與確認後觸發 MediaGroup 隔離。
+- 媒體、Google JSON Sidecar、Live Photo 與 RAW/JPEG 配對檔一律整組處理。
+- 待刪除群組只移至 `_Quarantine/待刪除`；程式不提供永久刪除。
+- 正式搬移採零覆寫命名、SHA-256 驗證與 SQLite 續傳狀態。
 
-> 從父資料夾再次執行時，掃描器會略過 `_Excluded` 與 `_Review`，避免已隔離檔案被重複處理。
+## 使用流程
 
-> 「一併處理 Sidecar JSON」預設開啟。Copy 會複製、Move 會移動、DRY_RUN 會列入預覽；媒體重新命名時，`照片.jpg.json` 與 `照片.json` 會同步更新名稱。孤立 JSON 保留原處。
+1. 選擇「一般資料夾」或「Takeout ZIP」，再選擇整理工作與歸檔位置。
+2. 按「開始分析」。系統按需讀取媒體並建立下列審核捷徑：
 
-[![Version](https://img.shields.io/badge/version-v2.9-blue.svg)](https://github.com/lianghao02/Smart-Photo-Organizer)
-[![EXIF](https://img.shields.io/badge/Library-exif--js-yellow.svg)](https://github.com/exif-js/exif-js)
+   - `01_重複照片`
+   - `02_相似照片`
+   - `03_模糊照片`
+   - `04_螢幕截圖`
+   - `05_短影片`
+   - `06_日期異常`
 
-## 🏆 v2.9 里程碑：EXIF拍攝日期自動重命名與目錄重構
+3. 按「開啟審核資料夾」人工檢查；把確定要排除的捷徑移到 `99_待刪除`。
+4. 按「處理待刪除」。程式先顯示 DRY_RUN 摘要，確認後才整組移至 Quarantine。
+5. 按「依日期整理」。日期可靠且未列入待刪除的 MediaGroup 會歸檔至 `YYYY/MM/Photos` 或 `YYYY/MM/Videos`。
 
-## 📖 重大更新摘要 (Summary)
+## 分析規則摘要
 
-本版本為智慧相片歸檔助手之 Pro Web 旗艦版本，全面升級 EXIF 拍攝時間解析器與資料夾結構重新組合演算法。
+- 完全重複：整個 MediaGroup 的非 JSON 成員須具備相同容量與完整雜湊。
+- 相似照片：先依拍攝時間、方向與長寬比分桶，再使用 dHash 分段索引，不執行全庫 O(n²) 比較。
+- 模糊照片：OpenCV Laplacian 僅列為人工候選；未安裝 OpenCV 時會略過並記錄警告。
+- 螢幕截圖／監視器畫面：沿用可解釋 7 分制，達門檻才列入審核。
+- 短影片：長度小於或等於 5 秒列入審核；Live Photo 配對影片會在探測秒數前排除。
+- 日期異常：高可信來源衝突、缺少日期或可信度低於 50 分時列入審核並更新 `date_audit.csv`。
 
-使用者在備份手機或相機上萬張相片時，檔名常為無意義的 `IMG_0001.JPG`，混亂分散在不同目錄中。本工具透過解析底層元資料 (Metadata)，能在 **3 秒內** 將數千張相片自動重命名為 `YYYYMMDD_HHMMSS` 格式，並依「年/月」自動歸檔至精美資料夾中。
+## Google Takeout ZIP
 
-## ✨ 重點更新特色
+- 不需事先全量解壓。
+- ZIP 中央目錄先通過路徑穿越、Symlink、加密成員、壓縮比與容量上限檢查。
+- 一次只串流解壓目前 MediaGroup；未命中審核分類的快取會立即清理。
+- 命中審核分類的群組才保留在 `_ReviewCache/<job_id>/<group_id>`，供 Windows 捷徑檢視。
+- 支援跨 ZIP Sidecar、`照片.jpg.json`、`照片.json`、重複編號與 `supplemental-metadata.json` 已知變體。
 
-- 📅 **EXIF 元資料精準解析器 (Metadata Date Extractor)**：
-  - 智慧提取照片 `DateTimeOriginal` 標籤，若缺乏 EXIF 則自動退回至檔案修改時間。
-  - 杜絕相片時間排序錯亂問題，重命名準確率達 100%。
+## 執行環境
 
-- 📁 **多層級資料夾自動建置 (Directory Structure Generator)**：
-  - 提供 `YYYY/MM` 或 `YYYY-MM-DD` 自訂歸檔模板。
-  - 將數小時的手動搬移整理工作，化為一鍵全自動流暢完成。
+- Windows 10／11
+- Python 3.12
+- 安裝依賴：`pip install -r requirements.txt`
+- 建議安裝 FFmpeg，或以 `FFPROBE_PATH` 指定 `ffprobe.exe`，供影片日期與長度解析。
+
+可直接執行 `start_organizer.bat`，或執行：
+
+```powershell
+python main.py
+```
+
+## 驗證
+
+```powershell
+python -m py_compile *.py
+python -m unittest discover -v
+```
+
+v3.0 最終驗收共執行 137 項測試：136 項通過，1 項 Symlink 測試因目前 Windows 權限不足而明確略過，無失敗項目。

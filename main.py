@@ -10,13 +10,13 @@ import os
 import re
 import csv
 import json
-import ctypes
 import hashlib
 import shutil
 import threading
 import datetime
 import time
 import concurrent.futures
+from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import zipfile
@@ -74,23 +74,7 @@ except ImportError:
 import import_state
 import takeout_zip
 import takeout_index
-
-
-def is_onedrive_cloud_only(path: str) -> bool:
-    """判斷檔案是否為 Windows 上 OneDrive 僅限線上（未下載）的預留檔案"""
-    try:
-        attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
-        if attrs == -1:
-            return False
-        # 0x1000 = FILE_ATTRIBUTE_OFFLINE
-        # 0x00400000 = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
-        # 0x00040000 = FILE_ATTRIBUTE_RECALL_ON_OPEN
-        if attrs & (0x1000 | 0x00400000 | 0x00040000):
-            return True
-        return False
-    except Exception:
-        return False
-
+from v3_pipeline import AnalysisOptions, PipelineCancelled, V3Pipeline
 
 def is_screenshot_by_exif_and_ratio(path: str, strict_mode: bool = True) -> bool:
     """透過檢查無相機物理 EXIF 參數以及長寬比符合手機比例 (>= 1.9) 來智慧辨識螢幕截圖"""
@@ -176,7 +160,7 @@ def parse_shell_date(raw_dt_str: str) -> Optional[datetime.datetime]:
 import base64
 
 class WinShellReader:
-    """透過 Windows Shell COM 與持久背景 PowerShell 管道，在不下載相片的前提下讀取雲端後設資料，並高速管理 Windows 捷徑"""
+    """透過 Windows Shell COM 讀取媒體後設資料並管理 Windows 捷徑。"""
     def __init__(self):
         self.proc = None
         self.lock = threading.Lock()
@@ -426,7 +410,7 @@ class Logger:
 class ConfigConstants:
     """⚙️ 全域常數 — 所有可變參數集中於此，嚴禁魔術數字"""
     APP_NAME    = "智慧照片整理助手 (Pro)"
-    VERSION     = "2.9"
+    VERSION     = "3.0"
     CONFIG_FILE = "config.json"
     HISTORY_FILE = "history_log.json"
     BLOCK_SIZE  = 65536
@@ -686,7 +670,8 @@ class DateParser:
 
     def get_date_details(self, path: str, is_photo: bool, is_cloud: bool = False, shell_reader: Any = None, google_json_date: Optional[str] = None) -> Dict[str, Any]:
         """收集全部候選日期後依可信度決策，並回傳來源、分數與衝突狀態。"""
-        cache_key = (os.path.abspath(path), is_photo, is_cloud, google_json_date)
+        # `is_cloud` 僅保留舊 API 相容性；v3.0 只處理已在本機可讀取的媒體。
+        cache_key = (os.path.abspath(path), is_photo, google_json_date)
         with self._cache_lock:
             cached = self._cache.get(cache_key)
             if cached is not None:
@@ -695,7 +680,7 @@ class DateParser:
         candidates: list[Dict[str, Any]] = []
 
         # EXIF 原始拍攝時間優先於 Sidecar；不再因讀取順序而採用低可信日期。
-        if is_photo and Image and not is_cloud:
+        if is_photo and Image:
             candidates.extend(self._get_exif_date_candidates(path))
 
         # Google Takeout Sidecar (若由 Takeout 引擎傳入 google_json_date 或由同名 JSON 檔讀取)
@@ -716,11 +701,11 @@ class DateParser:
                 pass
 
         # 影片容器後設資料。ffprobe 只讀取標頭，不會重新編碼或修改原檔。
-        if not is_photo and not is_cloud:
+        if not is_photo:
             d = self._get_video_metadata_date(path)
             self._append_candidate(candidates, d, "影片容器拍攝日期", ConfigConstants.DATE_CONFIDENCE["video_container"])
 
-        # Windows Shell 後援，主要供 OneDrive 雲端預留檔案使用。
+        # Windows Shell 後援：補足部分容器或檔案格式的媒體日期。
         if shell_reader:
             props = shell_reader.get_properties(path)
             if props.get('success') and props.get('date_taken'):
@@ -738,7 +723,7 @@ class DateParser:
             for img_ext in ['.heic', '.HEIC', '.jpg', '.JPG', '.jpeg', '.JPEG']:
                 sibling = base + img_ext
                 if sibling != path and os.path.exists(sibling):
-                    sibling_result = self.get_date_details(sibling, is_photo=True, is_cloud=is_cloud, shell_reader=shell_reader)
+                    sibling_result = self.get_date_details(sibling, is_photo=True, shell_reader=shell_reader)
                     sibling_date = sibling_result.get("date")
                     sibling_confidence = int(sibling_result.get("confidence", 0))
                     self._append_candidate(
@@ -1160,7 +1145,7 @@ class Processor:
     config_options 鍵值：
       mode / clean_empty / rename_enabled / gps_enabled /
       resume_enabled / blur_check_enabled / skip_existing /
-      dry_run / src_root / dst_root / onedrive_protect / smart_screenshot
+      dry_run / src_root / dst_root / smart_screenshot
     """
     def __init__(self, config_options: dict,
                  progress_callback: Any = None,
@@ -1191,12 +1176,6 @@ class Processor:
         self._sidecar_outcome = None
         self._sidecar_index_root: Optional[str] = None
         
-        # 自動偵測 OneDrive 路徑以強制開啟保護
-        self.onedrive_protect = self.config.get('onedrive_protect', False)
-        src_root = self.config.get('src_root', '')
-        if src_root and "onedrive" in src_root.lower():
-            self.onedrive_protect = True
-            self.logger.info("🛡️ 偵測到 OneDrive 路徑，自動啟動『雲端下載防禦機制』")
         self.shell_reader = WinShellReader() if os.name == 'nt' else None
 
     def stop(self):  self.stop_event.set(); self.pause_event.set()
@@ -1241,10 +1220,11 @@ class Processor:
                 def _get_file_date(f):
                     ext = str(os.path.splitext(f)[1]).lower()
                     is_photo = ext in ConfigConstants.EXT_PHOTOS
-                    is_cloud = False
-                    if self.onedrive_protect:
-                        is_cloud = is_onedrive_cloud_only(f)
-                    date_obj = self.date_parser.get_date(f, is_photo, is_cloud, self.shell_reader)
+                    date_obj = self.date_parser.get_date(
+                        f,
+                        is_photo,
+                        shell_reader=self.shell_reader,
+                    )
                     if not date_obj:
                         try:
                             ctime = os.path.getctime(f)
@@ -1545,11 +1525,6 @@ class Processor:
         try:    f_size = os.path.getsize(file_path)
         except: f_size = 0
 
-        # OneDrive 雲端防護檢查：如果檔案在雲端，則將 is_cloud 設為 True
-        is_cloud = False
-        if self.onedrive_protect:
-            is_cloud = is_onedrive_cloud_only(file_path)
-
         if self.config['resume_enabled'] and self._is_processed(file_path, f_size):
             with self.stats_lock:
                 self.stats['skipped'] += 1
@@ -1567,47 +1542,14 @@ class Processor:
             if not (is_photo or is_video): return
             
             is_screenshot = False
-            # 1. 檔名關鍵字比對 (雲端與本機皆可安全執行)
+            # 1. 檔名關鍵字比對
             if any(kw in filename.lower() for kw in ConfigConstants.SCREENSHOT_KEYWORDS):
                 is_screenshot = True
             # 2. 智慧截圖辨識
             elif self.config.get('smart_screenshot', False) and is_photo:
-                # 2a. 若檔案在雲端，使用 ShellReader 無痛讀取，不觸發下載
-                if is_cloud and self.shell_reader:
-                    props = self.shell_reader.get_properties(file_path)
-                    if props.get('success'):
-                        width_str = props.get('width', '')
-                        height_str = props.get('height', '')
-                        model = props.get('model', '')
-                        maker = props.get('maker', '')
-                        # 1. 檔名拍照命名排除
-                        lower_name = filename.lower()
-                        ext = os.path.splitext(lower_name)[1]
-                        if lower_name.startswith(('img', 'dsc', 'c360', 'mvimg')) and ext in {'.jpg', '.jpeg', '.heic', '.heif'}:
-                            pass
-                        else:
-                            m_w = re.search(r'(\d+)', width_str)
-                            m_h = re.search(r'(\d+)', height_str)
-                            if m_w and m_h:
-                                w = int(m_w.group(1))
-                                h = int(m_h.group(1))
-                                if w > 0 and h > 0:
-                                    strict_mode = self.config.get('screenshot_strict_mode', True)
-                                    if strict_mode:
-                                        # 手機直向螢幕截圖特徵：高大於寬，且比例 >= 1.6
-                                        # 排除條件：寬度大於 1440 (超出實體螢幕上限) 或有拍攝日期
-                                        if h > w and (h / w) >= 1.6 and not model and not maker:
-                                            if w <= 1440:
-                                                is_screenshot = True
-                                    else:
-                                        # 寬鬆模式：只要沒有相機型號與製造商，全當作截圖
-                                        if not model and not maker:
-                                            is_screenshot = True
-                # 2b. 若檔案在本機，直接以 EXIF 與長寬比分析
-                elif not is_cloud:
-                    strict_mode = self.config.get('screenshot_strict_mode', True)
-                    if is_screenshot_by_exif_and_ratio(file_path, strict_mode=strict_mode):
-                        is_screenshot = True
+                strict_mode = self.config.get('screenshot_strict_mode', True)
+                if is_screenshot_by_exif_and_ratio(file_path, strict_mode=strict_mode):
+                    is_screenshot = True
                     
             if is_screenshot:
                 to_clean_dir = os.path.join(self.config['src_root'], "_ToClean")
@@ -1635,16 +1577,20 @@ class Processor:
         if not (is_photo or is_video): return
 
         # 0. 收集所有候選日期，依可信度決策並寫入稽核資料。
-        date_details = self.date_parser.get_date_details(file_path, is_photo, is_cloud, self.shell_reader)
+        date_details = self.date_parser.get_date_details(
+            file_path,
+            is_photo,
+            shell_reader=self.shell_reader,
+        )
         date_obj = date_details.get("date")
         self._record_date_audit(file_path, date_details)
 
         # 1. 截圖／監視器畫面採分數制；達門檻才排除，否則照年月正常歸檔。
         if self.config.get('smart_screenshot', False) and is_photo:
-            shell_props = None
-            if is_cloud and self.shell_reader:
-                shell_props = self.shell_reader.get_properties(file_path)
-            exclusion_score, exclusion_reasons = ImageOps.score_excluded_screenshot(file_path, shell_props)
+            exclusion_score, exclusion_reasons = ImageOps.score_excluded_screenshot(
+                file_path,
+                None,
+            )
             if exclusion_score >= ConfigConstants.EXCLUSION_SCORE_THRESHOLD:
                 reason_text = "、".join(exclusion_reasons)
                 self.logger.info(f"[排除] {filename}：{exclusion_score} 分（{reason_text}）")
@@ -1692,8 +1638,8 @@ class Processor:
             )
             return
 
-        # 2. 重複檔案去重 (將 is_cloud 傳入 check_dup)
-        dupe = self._check_dup(file_path, f_size, is_cloud)
+        # 2. 重複檔案去重
+        dupe = self._check_dup(file_path, f_size)
         if dupe in ("DEST_DUPE", "SRC_DUPE"):
             if self.config['mode'] == 'move':
                 self._transfer_to(file_path, dst_root, "_Duplicates", filename, "重複", date_obj)
@@ -1707,7 +1653,7 @@ class Processor:
             return
 
         # 3. 模糊偵測 (如果是雲端預留檔案則跳過)
-        if self.config['blur_check_enabled'] and is_photo and not is_cloud:
+        if self.config['blur_check_enabled'] and is_photo:
             is_blur, score = ImageOps.is_blurry(file_path)
             if is_blur:
                 self._transfer_to(file_path, dst_root, "_Blurry", filename, f"模糊({int(score)})", date_obj)
@@ -1735,7 +1681,7 @@ class Processor:
             final_sub = os.path.join(date_path, type_folder)
             
             # GPS 分類 (雲端檔案不進行 GPS 解析)
-            if self.config['gps_enabled'] and not is_cloud:
+            if self.config['gps_enabled']:
                 loc = ImageOps.get_location_folder(file_path)
                 if loc: final_sub = os.path.join(final_sub, loc)
                 
@@ -1814,7 +1760,7 @@ class Processor:
                     shutil.move(src, dst)
                 self.logger.info(f"[{tag}] 移動: {os.path.basename(src)} → {parent}/{os.path.basename(dst)}")
             except PermissionError as e:
-                self.logger.error(f"❌ 移動失敗 (權限不足，可能正由 Windows / OneDrive 鎖定): {os.path.basename(src)}")
+                self.logger.error(f"❌ 移動失敗（權限不足或檔案正被其他程式使用）: {os.path.basename(src)}")
                 raise
             except Exception as e:
                 try:
@@ -1828,7 +1774,7 @@ class Processor:
                 shutil.copy2(src, dst)
                 self.logger.info(f"[{tag}] 複製: {os.path.basename(src)} → {parent}/{os.path.basename(dst)}")
             except PermissionError as e:
-                self.logger.error(f"❌ 複製失敗 (權限不足，可能正由 OneDrive 同步中被鎖定): {os.path.basename(src)}")
+                self.logger.error(f"❌ 複製失敗（權限不足或檔案正被其他程式使用）: {os.path.basename(src)}")
                 raise
         with self.stats_lock:
             self.stats['processed'] += 1
@@ -1931,18 +1877,7 @@ class Processor:
                     self.stats['failed_files'].append(f"{sidecar_src}: {e}")
                 self.logger.error(f"❌ Sidecar JSON 處理失敗，來源檔已保留: {sidecar_src} - {e}")
 
-    def _check_dup(self, path, f_size, is_cloud=False):
-        # 雲端隨選檔案降級去重邏輯：100% 避免計算雜湊觸發下載
-        if is_cloud:
-            filename = os.path.basename(path)
-            # 雲端去重降級：我們以檔案大小與檔名作為 seen_files 鍵值比對
-            with self.dedup_lock:
-                key = (f_size, filename)
-                if key in self.seen_files:
-                    return "SRC_DUPE"
-                self.seen_files[key] = path
-                return None
-
+    def _check_dup(self, path, f_size):
         f_p = f_f = None
         if self.config.get('skip_existing') and f_size in self.dst_index:
             source_set = getattr(self, 'source_files_set', set())
@@ -2119,6 +2054,9 @@ class WebBridge:
         self._processor: Any = None
         self._window: Any = None
         self._stop_event = threading.Event()
+        self._v3_pipeline: Optional[V3Pipeline] = None
+        self._v3_busy = False
+        self._v3_lock = threading.Lock()
         self._tray_manager = SystemTrayManager(self)
         
         self._log_queue = []
@@ -2164,6 +2102,11 @@ class WebBridge:
             return webview.FileDialog.FOLDER
         return getattr(webview, 'FOLDER_DIALOG', 10)
 
+    def _get_open_dialog_type(self):
+        if hasattr(webview, 'FileDialog') and hasattr(webview.FileDialog, 'OPEN'):
+            return webview.FileDialog.OPEN
+        return getattr(webview, 'OPEN_DIALOG', 0)
+
     def select_source_folder(self):
         if not self._window: return ""
         try:
@@ -2183,6 +2126,206 @@ class WebBridge:
         except Exception as e:
             self._logger.error(f"選擇資料夾失敗: {e}")
         return ""
+
+    def select_takeout_zip(self):
+        """選擇單一已下載至本機的 Google Takeout ZIP。"""
+        if not self._window:
+            return ""
+        try:
+            result = self._window.create_file_dialog(
+                self._get_open_dialog_type(),
+                allow_multiple=False,
+                file_types=("ZIP 壓縮檔 (*.zip)",),
+            )
+            if result:
+                return result[0]
+        except Exception as exc:
+            self._logger.error(f"選擇 Takeout ZIP 失敗: {exc}")
+        return ""
+
+    @staticmethod
+    def _v3_config_paths(config_dict: Dict[str, Any]) -> Tuple[str, str, str]:
+        source = str(config_dict.get("source_dir", "")).strip()
+        destination = str(config_dict.get("dest_dir", "")).strip()
+        source_mode = str(config_dict.get("source_mode", "folder")).strip()
+        if source_mode not in {"folder", "takeout_zip"}:
+            raise ValueError("來源類型必須是一般資料夾或 Takeout ZIP")
+        if not source or not os.path.exists(source):
+            raise ValueError("來源路徑不存在或尚未選擇")
+        if not destination:
+            raise ValueError("請選擇整理結果的目標資料夾")
+        source = os.path.abspath(source)
+        destination = os.path.abspath(destination)
+        if source_mode == "folder" and not os.path.isdir(source):
+            raise ValueError("一般資料夾模式的來源必須是資料夾")
+        if source_mode == "takeout_zip" and not (
+            os.path.isdir(source)
+            or (os.path.isfile(source) and source.lower().endswith(".zip"))
+        ):
+            raise ValueError("Takeout 模式的來源必須是 ZIP 或包含 ZIP 的資料夾")
+        return source, destination, source_mode
+
+    def _get_v3_pipeline(self, config_dict: Dict[str, Any]) -> V3Pipeline:
+        source, destination, source_mode = self._v3_config_paths(config_dict)
+        current = self._v3_pipeline
+        if (
+            current
+            and current.source_path == source
+            and current.destination_root == destination
+            and current.source_mode == source_mode
+        ):
+            return current
+        if current:
+            current.close()
+        shell_reader = WinShellReader()
+        self._v3_pipeline = V3Pipeline(
+            source,
+            destination,
+            source_mode,
+            shell_reader,
+            DateParser(),
+            shell_reader=shell_reader,
+            log_callback=self._on_log,
+            progress_callback=self._on_progress,
+            cancel_check=lambda: self._stop_event.is_set(),
+        )
+        return self._v3_pipeline
+
+    def _run_v3_exclusive(self, callback: Callable[[], Any]) -> Any:
+        """以同一工作鎖完整包覆預覽或搬移，消除檢查後競爭空窗。"""
+        with self._v3_lock:
+            if self._v3_busy:
+                raise RuntimeError("分析仍在執行，請等待完成或先按停止")
+            self._v3_busy = True
+        try:
+            return callback()
+        finally:
+            with self._v3_lock:
+                self._v3_busy = False
+
+    def start_v3_analysis(self, config_dict: Dict[str, Any]):
+        """啟動 v3 唯讀分析；本階段不搬移或刪除任何來源媒體。"""
+        try:
+            source, destination, _ = self._v3_config_paths(config_dict)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        with self._v3_lock:
+            if self._v3_busy:
+                return {"error": "已有任務正在執行，請先等待完成或按停止"}
+            self._v3_busy = True
+        self._app_config.source_dir = source
+        self._app_config.dest_dir = destination
+        self._app_config.save()
+        self._stop_event.clear()
+        threading.Thread(
+            target=self._run_v3_analysis,
+            args=(dict(config_dict),),
+            daemon=True,
+        ).start()
+        return {"success": True}
+
+    def _run_v3_analysis(self, config_dict: Dict[str, Any]) -> None:
+        try:
+            pipeline = self._get_v3_pipeline(config_dict)
+            self._on_log("🚀 開始 v3.0 唯讀分析：來源檔案不搬移、不刪除、不改名", "info")
+            summary = pipeline.analyze(AnalysisOptions(
+                screenshot_enabled=bool(config_dict.get("screenshot_enabled", True)),
+                blur_enabled=bool(config_dict.get("blur_enabled", True)),
+                short_video_enabled=bool(config_dict.get("short_video_enabled", True)),
+                similar_enabled=bool(config_dict.get("similar_enabled", True)),
+            ))
+            counts = "、".join(
+                f"{category} {count}"
+                for category, count in sorted(summary.category_counts.items())
+            ) or "沒有審核候選"
+            message = (
+                f"分析完成！\nMediaGroup：{summary.media_group_count}\n"
+                f"需審核群組：{summary.reviewed_group_count}\n{counts}\n"
+                f"錯誤：{len(summary.errors)}"
+            )
+            self._on_log(
+                f"✅ 分析完成：{summary.media_group_count} 組；"
+                f"需審核 {summary.reviewed_group_count} 組；錯誤 {len(summary.errors)}",
+                "success" if not summary.errors else "warning",
+            )
+            with self._queue_lock:
+                self._process_finished_msg = message
+        except PipelineCancelled:
+            with self._queue_lock:
+                self._process_finished_msg = "任務已停止，可稍後重新開始分析。"
+        except Exception as exc:
+            self._on_log(f"❌ v3 分析失敗: {exc}", "error")
+            with self._queue_lock:
+                self._process_finished_msg = f"分析失敗：{exc}"
+        finally:
+            with self._v3_lock:
+                self._v3_busy = False
+
+    @staticmethod
+    def _summary_dict(summary) -> Dict[str, Any]:
+        payload = asdict(summary)
+        payload["success"] = not bool(payload.get("errors"))
+        return payload
+
+    def preview_quarantine(self, config_dict: Dict[str, Any]):
+        try:
+            return self._run_v3_exclusive(
+                lambda: self._summary_dict(
+                    self._get_v3_pipeline(config_dict).process_pending_delete(
+                        dry_run=True
+                    )
+                )
+            )
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def execute_quarantine(self, config_dict: Dict[str, Any]):
+        try:
+            return self._run_v3_exclusive(
+                lambda: self._summary_dict(
+                    self._get_v3_pipeline(config_dict).process_pending_delete(
+                        dry_run=False
+                    )
+                )
+            )
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def preview_archive(self, config_dict: Dict[str, Any]):
+        try:
+            return self._run_v3_exclusive(
+                lambda: self._summary_dict(
+                    self._get_v3_pipeline(config_dict).preview_archive()
+                )
+            )
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def execute_archive(self, config_dict: Dict[str, Any]):
+        try:
+            return self._run_v3_exclusive(
+                lambda: self._summary_dict(
+                    self._get_v3_pipeline(config_dict).archive_by_date()
+                )
+            )
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def open_review_folder(self, config_dict: Dict[str, Any]):
+        try:
+            _, destination, _ = self._v3_config_paths(config_dict)
+            return self.open_dest_folder(os.path.join(destination, "_Review"))
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def open_quarantine_folder(self, config_dict: Dict[str, Any]):
+        try:
+            _, destination, _ = self._v3_config_paths(config_dict)
+            return self.open_dest_folder(
+                os.path.join(destination, "_Quarantine", "待刪除")
+            )
+        except Exception as exc:
+            return {"error": str(exc)}
 
     def open_dest_folder(self, folder_path=None):
         target = folder_path.strip() if (folder_path and isinstance(folder_path, str)) else self._app_config.dest_dir
@@ -2233,7 +2376,6 @@ class WebBridge:
             'dry_run': config_dict.get('dry_run', False),
             'smart_screenshot': config_dict.get('smart_screenshot', True),
             'screenshot_strict_mode': config_dict.get('screenshot_strict_mode', True),
-            'onedrive_protect': config_dict.get('onedrive_protect', True),
             'folder_pattern': config_dict.get('folder_pattern', 'ym'),
             'sidecar_enabled': config_dict.get('sidecar_enabled', True),
         }

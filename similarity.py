@@ -50,7 +50,7 @@ class SimilarityResult:
 
 
 @dataclass(frozen=True)
-class _PreparedCandidate:
+class SimilarityFingerprint:
     source: SimilarityCandidate
     timestamp: float
     width: int
@@ -112,7 +112,8 @@ class SimilarPhotoDetector:
                 )
         return result
 
-    def _prepare(self, candidate: SimilarityCandidate) -> _PreparedCandidate:
+    def fingerprint(self, candidate: SimilarityCandidate) -> SimilarityFingerprint:
+        """從單一可讀照片建立可持久於記憶體的輕量相似度指紋。"""
         timestamp = self._timestamp(candidate.capture_date)
         if timestamp is None:
             raise ValueError("缺少可解析的拍攝時間")
@@ -135,7 +136,7 @@ class SimilarPhotoDetector:
         aspect_ratio = long_edge / float(short_edge)
         orientation = "S" if width == height else ("L" if width > height else "P")
         aspect_bucket = int(round(aspect_ratio / max(self.aspect_tolerance, 0.01)))
-        return _PreparedCandidate(
+        return SimilarityFingerprint(
             source=candidate,
             timestamp=timestamp,
             width=width,
@@ -155,8 +156,8 @@ class SimilarPhotoDetector:
 
     def _dimensions_compatible(
         self,
-        first: _PreparedCandidate,
-        second: _PreparedCandidate,
+        first: SimilarityFingerprint,
+        second: SimilarityFingerprint,
     ) -> bool:
         if first.orientation != second.orientation:
             return False
@@ -190,14 +191,14 @@ class SimilarPhotoDetector:
         candidates: Sequence[SimilarityCandidate],
     ) -> SimilarityResult:
         result = SimilarityResult()
-        prepared: List[_PreparedCandidate] = []
+        prepared: List[SimilarityFingerprint] = []
         seen_groups = set()
         for candidate in sorted(candidates, key=lambda item: item.group_id):
             if candidate.group_id in seen_groups:
                 continue
             seen_groups.add(candidate.group_id)
             try:
-                prepared.append(self._prepare(candidate))
+                prepared.append(self.fingerprint(candidate))
             except (OSError, ValueError) as exc:
                 result.errors.append(f"{candidate.group_id}: {exc}")
         result.candidate_count = len(prepared)
@@ -303,6 +304,131 @@ class SimilarPhotoDetector:
             reference_id = ordered[0]
             cluster_payload = "\n".join(ordered).encode("utf-8")
             cluster_id = f"sim_{hashlib.sha256(cluster_payload).hexdigest()[:16]}"
+            for group_id in ordered:
+                distance = distance_by_group.get(group_id, 0)
+                result.findings[group_id] = SimilarityFinding(
+                    group_id=group_id,
+                    cluster_id=cluster_id,
+                    reference_group_id=reference_id,
+                    hamming_distance=distance,
+                    score=round((64 - distance) / 64 * 100, 2),
+                )
+        return result
+
+    def find_similar_fingerprints(
+        self,
+        fingerprints: Sequence[SimilarityFingerprint],
+        exact_signatures: Optional[Dict[str, object]] = None,
+    ) -> SimilarityResult:
+        """
+        對已完成影像解碼的輕量指紋進行相似分群。
+
+        供 Takeout 串流分析在刪除非命中暫存檔後使用；`exact_signatures`
+        用來排除已由 01_重複照片處理的完整內容相同群組。
+        """
+        prepared = sorted(
+            {item.source.group_id: item for item in fingerprints}.values(),
+            key=lambda item: item.source.group_id,
+        )
+        result = SimilarityResult(candidate_count=len(prepared))
+        exact_signatures = exact_signatures or {}
+        parents = {item.source.group_id: item.source.group_id for item in prepared}
+
+        def find(group_id: str) -> str:
+            while parents[group_id] != group_id:
+                parents[group_id] = parents[parents[group_id]]
+                group_id = parents[group_id]
+            return group_id
+
+        def union(first_id: str, second_id: str) -> None:
+            first_root = find(first_id)
+            second_root = find(second_id)
+            if first_root == second_root:
+                return
+            lower, higher = sorted((first_root, second_root))
+            parents[higher] = lower
+
+        index: Dict[Tuple[int, str, int, int, int], List[int]] = {}
+        compared_pairs = set()
+        matched_pairs: List[Tuple[str, str, int]] = []
+
+        for current_index, current in enumerate(prepared):
+            time_bucket = int(current.timestamp // self.time_window_seconds)
+            candidate_indexes = set()
+            for adjacent_time in (time_bucket - 1, time_bucket, time_bucket + 1):
+                for adjacent_aspect in (
+                    current.aspect_bucket - 1,
+                    current.aspect_bucket,
+                    current.aspect_bucket + 1,
+                ):
+                    for band_index, band_value in self._bands(current.dhash):
+                        candidate_indexes.update(index.get((
+                            adjacent_time,
+                            current.orientation,
+                            adjacent_aspect,
+                            band_index,
+                            band_value,
+                        ), ()))
+
+            for previous_index in sorted(candidate_indexes):
+                pair_key = (previous_index, current_index)
+                if pair_key in compared_pairs:
+                    continue
+                compared_pairs.add(pair_key)
+                result.comparison_count += 1
+                previous = prepared[previous_index]
+                if abs(current.timestamp - previous.timestamp) > self.time_window_seconds:
+                    continue
+                if not self._dimensions_compatible(previous, current):
+                    continue
+                distance = self._hamming(previous.dhash, current.dhash)
+                if distance > self.max_hamming_distance:
+                    continue
+                previous_signature = exact_signatures.get(previous.source.group_id)
+                current_signature = exact_signatures.get(current.source.group_id)
+                if (
+                    previous_signature is not None
+                    and current_signature is not None
+                    and previous_signature == current_signature
+                ):
+                    continue
+                union(previous.source.group_id, current.source.group_id)
+                matched_pairs.append((
+                    previous.source.group_id,
+                    current.source.group_id,
+                    distance,
+                ))
+
+            for band_index, band_value in self._bands(current.dhash):
+                index.setdefault((
+                    time_bucket,
+                    current.orientation,
+                    current.aspect_bucket,
+                    band_index,
+                    band_value,
+                ), []).append(current_index)
+
+        clusters: Dict[str, List[str]] = {}
+        for group_id in parents:
+            clusters.setdefault(find(group_id), []).append(group_id)
+        distance_by_group: Dict[str, int] = {}
+        for first_id, second_id, distance in matched_pairs:
+            distance_by_group[first_id] = min(
+                distance_by_group.get(first_id, 64),
+                distance,
+            )
+            distance_by_group[second_id] = min(
+                distance_by_group.get(second_id, 64),
+                distance,
+            )
+        for members in clusters.values():
+            if len(members) < 2:
+                continue
+            ordered = sorted(members)
+            reference_id = ordered[0]
+            cluster_id = "sim_" + hashlib.sha256(
+                "\n".join(ordered).encode("utf-8")
+            ).hexdigest()[:16]
             for group_id in ordered:
                 distance = distance_by_group.get(group_id, 0)
                 result.findings[group_id] = SimilarityFinding(

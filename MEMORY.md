@@ -2,7 +2,7 @@
 
 - Windows Shell 欄位索引 `3` 是檔案修改日期，不可當成媒體拍攝日期，否則複製或下載後會歸到錯誤年份。
 - 影片優先採用 QuickTime `com.apple.quicktime.creationdate`，其次才採用一般 `creation_time`。
-- 截圖與監視器畫面採可解釋分數制；達 7 分移至 `_Excluded/Screenshots`，低於門檻維持年月歸檔。
+- 截圖與監視器畫面採可解釋 7 分制；v3.0 達門檻只建立 `_Review/04_螢幕截圖` 捷徑，不直接搬移原檔。
 - 日期不可採「第一個讀到就使用」；必須收集候選日期、依可信度決策，並隔離高可信年份衝突。
 - 程式產生的日期檔名不可回頭作為日期證據；低於 50 分的日期必須隔離複查。
 - 已配對的 Google Takeout Sidecar JSON 必須跟隨媒體的 Copy／Move／重新命名結果；孤立 JSON 不自動處理。
@@ -21,6 +21,9 @@
 - Quarantine 跨磁碟搬移採「整組先複製驗證、全部成功後才移除來源」；不可逐檔直接 move，否則中斷會拆散 MediaGroup。
 - Quarantine 續傳不能依賴捷徑目標仍存在；來源可能已在前次交易部分移除，必須以 SQLite action/item 與已驗證目的檔恢復。
 - 短影片分類必須先讀取 MediaGroup 的 `LIVE_PHOTO_VIDEO` 角色再決定是否呼叫 ffprobe；不得只靠 MOV 檔名或影片秒數排除。
+- v3.0 分析期間不得同時執行 Quarantine 或日期歸檔；WebBridge 必須以工作鎖拒絕競爭操作。
+- Takeout 正式歸檔前必須重新驗證 `99_待刪除`；待刪除群組不可為了歸檔而重新解壓。
+- 切換來源或目標時須關閉舊 `V3Pipeline` 持有的 Windows Shell 背景程序，避免長時間使用累積殘留程序。
 
 ## 📦 外部依賴追蹤
 
@@ -59,3 +62,4 @@
 - 2026-08-09：完成 v3.0 Phase 7 相似照片分析；先依拍攝時間、方向與長寬比分桶，再以 dHash 分段索引限制比較量，完全重複不重複列入相似分類。
 - 2026-08-09：完成 v3.0 Phase 8 日期異常審核；日期衝突、缺失與低可信度只建立審核捷徑，並以 UTF-8 BOM 原子更新 `date_audit.csv`。
 - 2026-08-09：完成 v3.0 Phase 9 MediaGroup 日期歸檔；整組先複製驗證再移除來源，碰撞時採共同後綴並保留 Sidecar／Live Photo 關係。
+- 2026-08-09：完成 v3.0 Phase 10；以 `V3Pipeline` 串接全流程，移除雲端 placeholder 控制項，完成未完成 Job 接續、非技術 UI、瀏覽器實機驗證與 137 項全專案回歸測試。

@@ -4,27 +4,50 @@
 
 ## [Unreleased]
 
-### 新增
+## 🏆 v3.0.0 里程碑：人工審核歸檔
 
-- 建立 v3.0 統一來源索引、SidecarMatcher 與 MediaGroup／Live Photo 配對基礎。
-- 建立 `_Review`／`_ReviewCache` 工作區、SQLite ReviewEntry 與 Windows 捷徑安全驗證骨架。
-- 新增 MediaGroup 層級完全重複、Laplacian 模糊與 7 分制截圖人工審核分類器。
-- 新增 `99_待刪除` 至 `_Quarantine/待刪除` 的 MediaGroup 兩階段驗證搬移與中斷續傳。
-- 新增 5 秒內短影片人工審核分類，並在執行 ffprobe 前排除 Live Photo 配對影片。
-- 新增以時間／尺寸分桶與 dHash 分段索引執行的相似照片人工審核分類。
-- 新增 MediaGroup 日期衝突／低可信度人工審核與防公式注入的日期稽核報表。
-- 新增 MediaGroup 兩階段日期歸檔、零覆寫命名與中斷續傳交易。
+### 重大更新摘要
 
-### 修正
+v3.0 將本機資料夾與 Google Takeout ZIP 統一成「唯讀分析、人工審核、隔離或日期歸檔」工作流程，媒體、JSON Sidecar、Live Photo 與 RAW/JPEG 配對檔以 MediaGroup 整組處理。
 
-- 防止不同 ZIP、不同檔名編號與不支援格式被誤組為 Live Photo 或 RAW 配對。
-- MediaGroup 與 ReviewEntry 寫入改為冪等並補上跨任務主鍵與允許根目錄防護。
+舊版分類結果會直接決定實體搬移，Takeout 也缺少可供人工挑選的完整流程。本版以 SQLite 權威狀態、Windows 捷徑、按需 ZIP 快取、兩階段搬移與 SHA-256 驗證收斂資料風險；程式不提供永久刪除，原始 Takeout ZIP 永遠唯讀。
 
-### 文件
+## ✨ 重點更新特色
 
-- 建立 v3.0 產品規格、架構、實作計畫、目前任務與 UI／UX 規格。
-- 建立 Antigravity／Codex 單一協作規則與階段停止條件。
-- 明確區分既有 Takeout Phase 1～4.8 與新的 v3.0 Phase 1～10。
+🔍 **統一來源與 SidecarMatcher（跨 ZIP 配對與歧義防護）**：
+
+- 一般資料夾及多個 Takeout ZIP 使用同一來源模型，支援常見 JSON、重複編號及 Supplemental Metadata 變體。
+- 同一 JSON 在任務內最多指派一次；同優先序多候選標記歧義，不任意選取。
+
+📦 **MediaGroup 整組處理（Live Photo／RAW／JSON 不拆散）**：
+
+- HEIC／JPG + MOV Live Photo、RAW + JPEG 與 Google JSON 建立決定性群組。
+- Quarantine 與日期歸檔均驗證完整成員，缺少任何檔案即停止整組操作。
+
+🗂️ **人工審核工作區（01～06 與 99_待刪除）**：
+
+- 重複、相似、模糊、7 分制截圖、5 秒短影片與日期異常只建立 `.lnk` 捷徑。
+- 只有移入 `99_待刪除` 的已登記捷徑可在確認後觸發隔離；同一群組多個捷徑只處理一次。
+
+🛡️ **兩階段 Quarantine 與日期歸檔（零覆寫、可續傳）**：
+
+- 先完整複製、`fsync`、核對容量與 SHA-256，再移除來源；碰撞時整組使用共同穩定後綴。
+- 日期衝突、低可信度及待刪除群組不自動歸檔；中斷後依 SQLite 交易狀態續傳。
+
+⚡ **大型 Takeout 按需處理（低峰值暫存）**：
+
+- ZIP 先執行路徑、Symlink、加密、壓縮比及成員總量安全檢查。
+- 一次只解壓目前 MediaGroup；未命中審核的快取立即清理，命中項目才保留於 `_ReviewCache`。
+
+🖥️ **v3.0 非技術操作介面（安全流程明確化）**：
+
+- 介面依序提供來源選擇、開始分析、開啟審核、處理待刪除、開啟隔離區與依日期整理。
+- 移除 OneDrive／Google Drive placeholder 防下載控制項；分析中鎖定搬移操作，正式處理前一律顯示預覽摘要。
+
+🧪 **完整回歸驗證（137 項測試）**：
+
+- 136 項通過；1 項 Symlink 測試因目前 Windows 權限不足而明確略過；0 失敗。
+- 另完成 1280px 桌面與 390px 行動寬度瀏覽器互動、響應式及主控台錯誤驗證。
 
 ## [2.9.0]
 

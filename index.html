@@ -1,817 +1,484 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="zh-Hant-TW">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>智慧照片整理助手 Pro v2.9</title>
+  <title>智慧照片整理助手 v3.0</title>
   <style>
     :root {
-      --bg-primary: #0F172A;
-      --bg-card: #1E293B;
-      --bg-input: #334155;
-      --border-color: #475569;
-      --accent-color: #38BDF8;
-      --accent-hover: #0284C7;
-      --success-color: #22C55E;
-      --warning-color: #F59E0B;
-      --danger-color: #EF4444;
-      --text-main: #F8FAFC;
-      --text-muted: #94A3B8;
+      color-scheme: dark;
+      --bg: #08111f;
+      --panel: #111d30;
+      --panel-soft: #17253a;
+      --border: #2a3b55;
+      --text: #eef5ff;
+      --muted: #9db0c9;
+      --blue: #38bdf8;
+      --blue-dark: #075985;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #fb7185;
+      --shadow: 0 18px 44px rgba(0, 0, 0, .28);
     }
-
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft JhengHei UI", sans-serif;
-    }
-
+    * { box-sizing: border-box; }
     body {
-      background-color: var(--bg-primary);
-      color: var(--text-main);
-      padding: 20px;
-      user-select: none;
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% 0%, rgba(14, 165, 233, .15), transparent 34rem),
+        linear-gradient(145deg, #07101c, var(--bg));
+      font-family: Inter, "Segoe UI", "Noto Sans TC", sans-serif;
     }
-
-    .container {
-      max-width: 1000px;
-      margin: 0 auto;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
+    button, input { font: inherit; }
+    button:focus-visible, input:focus-visible {
+      outline: 3px solid rgba(56, 189, 248, .45);
+      outline-offset: 2px;
     }
-
-    /* Header */
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding-bottom: 12px;
-      border-bottom: 1px solid var(--border-color);
+    .app { width: min(1120px, calc(100% - 32px)); margin: 28px auto 52px; }
+    .topbar {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 20px; margin-bottom: 18px;
     }
-
-    .header-title {
-      display: flex;
-      align-items: center;
-      gap: 10px;
+    h1 { margin: 0; font-size: clamp(1.45rem, 3vw, 2rem); letter-spacing: .02em; }
+    .subtitle { margin-top: 6px; color: var(--muted); font-size: .92rem; }
+    .version { color: var(--blue); font-weight: 700; }
+    .status {
+      flex: none; padding: 8px 14px; border-radius: 999px;
+      color: #bae6fd; background: rgba(14, 165, 233, .12);
+      border: 1px solid rgba(56, 189, 248, .4); font-weight: 700;
     }
-
-    .header-title h1 {
-      font-size: 1.5rem;
-      font-weight: 700;
-      background: linear-gradient(135deg, #38BDF8, #818CF8);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+    .status.running { color: #bbf7d0; border-color: rgba(52, 211, 153, .55); }
+    .status.error { color: #fecdd3; border-color: rgba(251, 113, 133, .55); }
+    .safety {
+      margin-bottom: 18px; padding: 14px 16px; border-radius: 14px;
+      background: rgba(52, 211, 153, .08); border: 1px solid rgba(52, 211, 153, .32);
+      color: #d1fae5; line-height: 1.65;
     }
-
-    .version-badge {
-      background-color: rgba(56, 189, 248, 0.15);
-      color: var(--accent-color);
-      padding: 2px 8px;
-      border-radius: 12px;
-      font-size: 0.8rem;
-      font-weight: 600;
-      border: 1px solid rgba(56, 189, 248, 0.3);
-    }
-
-    .status-badge {
-      padding: 4px 12px;
-      border-radius: 20px;
-      font-size: 0.85rem;
-      font-weight: 600;
-      background: #334155;
-      color: var(--text-muted);
-    }
-    .status-badge.running { background: rgba(34, 197, 94, 0.2); color: var(--success-color); border: 1px solid var(--success-color); }
-    .status-badge.paused { background: rgba(245, 158, 11, 0.2); color: var(--warning-color); border: 1px solid var(--warning-color); }
-
-    /* Cards */
+    .grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; }
     .card {
-      background-color: var(--bg-card);
-      border: 1px solid var(--border-color);
-      border-radius: 12px;
-      padding: 16px 20px;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+      background: linear-gradient(160deg, rgba(23, 37, 58, .98), rgba(13, 25, 43, .98));
+      border: 1px solid var(--border); border-radius: 18px; padding: 20px;
+      box-shadow: var(--shadow);
     }
-
-    .card-title {
-      font-size: 1rem;
-      font-weight: 600;
-      color: var(--accent-color);
-      margin-bottom: 12px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
+    .card.full { grid-column: 1 / -1; }
+    .card h2 { margin: 0 0 16px; font-size: 1.08rem; color: #e0f2fe; }
+    .mode-switch {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px;
     }
-
-    /* Form controls */
-    .path-group {
-      display: grid;
-      grid-template-columns: 110px 1fr 90px;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 10px;
+    .mode-option { position: relative; }
+    .mode-option input { position: absolute; opacity: 0; pointer-events: none; }
+    .mode-option label {
+      display: block; min-height: 74px; padding: 13px; border-radius: 12px;
+      border: 1px solid var(--border); background: rgba(8, 17, 31, .55); cursor: pointer;
     }
-    .path-group:last-child { margin-bottom: 0; }
-
-    label { font-size: 0.9rem; color: var(--text-main); }
-
+    .mode-option input:checked + label {
+      border-color: var(--blue); background: rgba(14, 165, 233, .13);
+      box-shadow: inset 0 0 0 1px rgba(56, 189, 248, .3);
+    }
+    .mode-title { display: block; font-weight: 750; margin-bottom: 4px; }
+    .mode-help { display: block; color: var(--muted); font-size: .8rem; line-height: 1.4; }
+    .field { margin-top: 14px; }
+    .field label { display: block; color: #c9d8ea; font-size: .85rem; margin-bottom: 7px; font-weight: 650; }
+    .path-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .path-actions { display: flex; gap: 8px; }
     input[type="text"] {
-      background-color: var(--bg-input);
-      border: 1px solid var(--border-color);
-      color: var(--text-main);
-      padding: 8px 12px;
-      border-radius: 6px;
-      font-size: 0.9rem;
-      outline: none;
-      transition: border-color 0.2s;
+      width: 100%; min-width: 0; padding: 11px 12px; border-radius: 10px;
+      border: 1px solid var(--border); background: #091321; color: var(--text);
     }
-    input[type="text"]:focus {
-      border-color: var(--accent-color);
-    }
-
     .btn {
-      background-color: var(--bg-input);
-      color: var(--text-main);
-      border: 1px solid var(--border-color);
-      padding: 8px 14px;
-      border-radius: 6px;
-      font-size: 0.88rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
+      min-height: 42px; padding: 10px 14px; border: 1px solid var(--border);
+      border-radius: 10px; background: #20314a; color: var(--text); cursor: pointer;
+      transition: transform .15s ease, border-color .15s ease, background .15s ease;
     }
-    .btn:hover:not(:disabled) {
-      background-color: var(--border-color);
+    .btn:hover:not(:disabled) { transform: translateY(-1px); border-color: #56718f; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .btn.primary { border-color: #0284c7; background: linear-gradient(135deg, #0369a1, #0284c7); }
+    .btn.safe { border-color: #059669; background: rgba(5, 150, 105, .22); color: #d1fae5; }
+    .btn.warn { border-color: #d97706; background: rgba(217, 119, 6, .2); color: #fef3c7; }
+    .btn.danger { border-color: #e11d48; background: rgba(225, 29, 72, .18); color: #ffe4e6; }
+    .options { display: grid; gap: 10px; }
+    .check {
+      display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px;
+      border-radius: 10px; background: rgba(8, 17, 31, .48); border: 1px solid transparent;
     }
-    .btn:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
+    .check:hover { border-color: var(--border); }
+    .check input { margin-top: 3px; width: 17px; height: 17px; accent-color: var(--blue); }
+    .check strong { display: block; font-size: .9rem; }
+    .check small { display: block; margin-top: 3px; color: var(--muted); line-height: 1.4; }
+    .workflow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .action {
+      display: flex; flex-direction: column; min-height: 168px; padding: 16px;
+      border-radius: 14px; background: rgba(8, 17, 31, .5); border: 1px solid var(--border);
     }
-
-    .btn-primary {
-      background: linear-gradient(135deg, #0284C7, #2563EB);
-      color: white;
-      border: none;
+    .step { color: var(--blue); font-size: .75rem; font-weight: 800; letter-spacing: .08em; }
+    .action h3 { margin: 8px 0 6px; font-size: 1rem; }
+    .action p { margin: 0 0 14px; color: var(--muted); font-size: .82rem; line-height: 1.5; flex: 1; }
+    .action-buttons { display: flex; gap: 7px; flex-wrap: wrap; }
+    .action-buttons .btn { flex: 1; min-width: 112px; }
+    .dashboard { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+    .metric { padding: 13px; border-radius: 12px; background: var(--panel-soft); text-align: center; }
+    .metric span { display: block; color: var(--muted); font-size: .75rem; }
+    .metric strong { display: block; margin-top: 6px; color: var(--blue); font-size: 1.12rem; }
+    .progress-track { height: 8px; overflow: hidden; border-radius: 99px; background: #08111f; }
+    .progress { height: 100%; width: 0; background: linear-gradient(90deg, #0ea5e9, #34d399); transition: width .2s; }
+    .current { margin: 9px 0 14px; color: var(--muted); font-size: .82rem; min-height: 1.2em; }
+    .console {
+      height: 190px; overflow: auto; padding: 12px; border-radius: 12px;
+      background: #050b14; border: 1px solid #24364f; font: .82rem/1.5 Consolas, monospace;
     }
-    .btn-primary:hover:not(:disabled) {
-      background: linear-gradient(135deg, #0369A1, #1D4ED8);
+    .log { word-break: break-word; }
+    .log.info { color: #d5e3f4; } .log.warning, .log.warn { color: var(--amber); }
+    .log.error { color: var(--red); } .log.success { color: var(--green); }
+    .footer-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 12px; }
+    .note { color: var(--muted); font-size: .78rem; line-height: 1.55; }
+    @media (max-width: 850px) {
+      .grid { grid-template-columns: 1fr; }
+      .workflow { grid-template-columns: 1fr; }
+      .dashboard { grid-template-columns: 1fr 1fr; }
+      .card.full { grid-column: auto; }
     }
-
-    .btn-warning {
-      background-color: rgba(245, 158, 11, 0.2);
-      color: var(--warning-color);
-      border: 1px solid var(--warning-color);
+    @media (max-width: 560px) {
+      .app { width: min(100% - 18px, 1120px); margin-top: 14px; }
+      .topbar { align-items: flex-start; }
+      .mode-switch, .dashboard { grid-template-columns: 1fr; }
+      .path-row { grid-template-columns: 1fr; }
+      .path-actions .btn { flex: 1; }
     }
-    .btn-warning:hover:not(:disabled) { background-color: rgba(245, 158, 11, 0.3); }
-
-    .btn-danger {
-      background-color: rgba(239, 68, 68, 0.2);
-      color: var(--danger-color);
-      border: 1px solid var(--danger-color);
-    }
-    .btn-danger:hover:not(:disabled) { background-color: rgba(239, 68, 68, 0.3); }
-
-    /* Mode Selection */
-    .mode-container {
-      display: flex;
-      gap: 24px;
-      margin-bottom: 16px;
-      padding-bottom: 14px;
-      border-bottom: 1px dashed var(--border-color);
-    }
-    .radio-label {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      cursor: pointer;
-      font-size: 0.92rem;
-      font-weight: 500;
-    }
-    input[type="radio"], input[type="checkbox"] {
-      accent-color: var(--accent-color);
-      width: 16px;
-      height: 16px;
-      cursor: pointer;
-    }
-
-    /* Info Icon & Tooltip */
-    .tooltip-box {
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .info-icon {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: rgba(56, 189, 248, 0.15);
-      color: var(--accent-color);
-      font-size: 0.78rem;
-      font-weight: bold;
-      cursor: pointer;
-      border: 1px solid rgba(56, 189, 248, 0.4);
-      transition: all 0.2s ease;
-      line-height: 1;
-    }
-    .info-icon:hover {
-      background: var(--accent-color);
-      color: #0F172A;
-      transform: scale(1.15);
-    }
-    .tooltip-box .tooltip-text {
-      visibility: hidden;
-      width: 260px;
-      background-color: #1E293B;
-      color: #F8FAFC;
-      text-align: left;
-      border-radius: 8px;
-      padding: 10px 12px;
-      position: absolute;
-      z-index: 100;
-      top: 130%;
-      left: 0;
-      opacity: 0;
-      transition: opacity 0.2s ease, visibility 0.2s ease;
-      border: 1px solid var(--border-color);
-      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
-      font-size: 0.82rem;
-      line-height: 1.45;
-      pointer-events: none;
-      font-weight: normal;
-    }
-    .tooltip-box:hover .tooltip-text {
-      visibility: visible;
-      opacity: 1;
-    }
-
-    /* Core Options Grid */
-    .core-options-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 16px;
-      margin-bottom: 12px;
-    }
-    .core-column {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .checkbox-label {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      cursor: pointer;
-      font-size: 0.88rem;
-      line-height: 1.35;
-    }
-    .checkbox-label.sub-option {
-      margin-left: 24px;
-      font-size: 0.83rem;
-      color: var(--text-muted);
-      border-left: 2px solid var(--border-color);
-      padding-left: 8px;
-    }
-
-    /* Advanced Collapsible Accordion */
-    details {
-      background-color: rgba(51, 65, 85, 0.4);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      padding: 10px 14px;
-      transition: all 0.2s ease;
-    }
-    details[open] {
-      background-color: rgba(51, 65, 85, 0.7);
-    }
-    summary {
-      font-size: 0.88rem;
-      font-weight: 600;
-      color: var(--text-muted);
-      cursor: pointer;
-      user-select: none;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      outline: none;
-    }
-    summary:hover {
-      color: var(--accent-color);
-    }
-    .advanced-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 12px 24px;
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px dashed var(--border-color);
-    }
-
-    /* Controls Bar */
-    .controls-bar {
-      display: flex;
-      justify-content: flex-end;
-      gap: 12px;
-    }
-    .controls-bar .btn {
-      padding: 10px 24px;
-      font-size: 0.95rem;
-    }
-
-    /* Dashboard & Progress */
-    .stats-cards {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 12px;
-      margin-bottom: 14px;
-    }
-    .stat-card {
-      background-color: var(--bg-input);
-      border-radius: 8px;
-      padding: 10px;
-      text-align: center;
-    }
-    .stat-card .label { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px; }
-    .stat-card .value { font-size: 1.1rem; font-weight: 700; color: var(--accent-color); font-family: monospace; }
-
-    .progress-bar-bg {
-      background-color: var(--bg-input);
-      height: 10px;
-      border-radius: 5px;
-      overflow: hidden;
-      margin-bottom: 8px;
-    }
-    .progress-bar-fill {
-      background: linear-gradient(90deg, #38BDF8, #818CF8);
-      height: 100%;
-      width: 0%;
-      transition: width 0.2s ease;
-    }
-
-    .current-file {
-      font-size: 0.82rem;
-      color: var(--text-muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      margin-bottom: 12px;
-    }
-
-    /* Terminal Console Log */
-    .console-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 6px;
-    }
-    .console-box {
-      background-color: #090D16;
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      height: 180px;
-      padding: 10px 14px;
-      font-family: 'Consolas', 'Courier New', monospace;
-      font-size: 0.85rem;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    .log-line { line-height: 1.4; word-break: break-all; }
-    .log-info { color: #CBD5E1; }
-    .log-warn { color: #FBBF24; }
-    .log-error { color: #F87171; }
-    .log-success { color: #4ADE80; }
   </style>
 </head>
 <body>
-
-<div class="container">
-  <!-- Header -->
-  <div class="header">
-    <div class="header-title">
-      <h1>✨ 智慧照片整理助手</h1>
-      <span class="version-badge">v2.9 (Pro Web)</span>
+<main class="app">
+  <header class="topbar">
+    <div>
+      <h1>✨ 智慧照片整理助手 <span class="version">v3.0</span></h1>
+      <div class="subtitle">本機照片與 Google Takeout ZIP 的「先審核、後處理」整理工具</div>
     </div>
-    <div id="statusBadge" class="status-badge">靜候中</div>
-  </div>
+    <div id="statusBadge" class="status" role="status">準備就緒</div>
+  </header>
 
-  <!-- Paths -->
-  <div class="card">
-    <div class="card-title">📂 資料夾路徑設定</div>
-    <div class="path-group">
-      <label>來源資料夾：</label>
-      <input type="text" id="sourceDir" placeholder="請選擇包含照片的來源資料夾...">
-      <button class="btn" onclick="selectSourceFolder()">瀏覽...</button>
-    </div>
-    <div class="path-group">
-      <label>目標資料夾：</label>
-      <input type="text" id="destDir" placeholder="請選擇整理後存放的目標資料夾...">
-      <button class="btn" id="btnBrowseDest" onclick="selectDestFolder()">瀏覽...</button>
-    </div>
-  </div>
+  <section class="safety" aria-label="安全說明">
+    🛡️ <strong>開始分析不會搬移原始檔。</strong>
+    只有放進 <strong>99_待刪除</strong> 的捷徑會在確認後整組移至 Quarantine；程式不提供永久刪除。
+    原始 Google Takeout ZIP 永遠唯讀。
+  </section>
 
-  <!-- Mode & Options -->
-  <div class="card">
-    <div class="card-title">⚙️ 整理模式與規則</div>
-
-    <!-- Main Work Type (General vs Takeout ZIP) -->
-    <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; display: flex; align-items: center; gap: 20px;">
-      <span style="font-weight: 600; color: var(--accent-color); font-size: 0.9rem;">任務類型：</span>
-      <label class="radio-label" style="font-weight: 600;">
-        <input type="radio" name="work_type" value="general" checked onchange="onWorkTypeChange()"> 📁 一般資料夾整理
-      </label>
-      <label class="radio-label" style="font-weight: 600; color: #F59E0B;">
-        <input type="radio" name="work_type" value="takeout_zip" onchange="onWorkTypeChange()"> 📦 Google Takeout ZIP 壓縮檔匯入 (本機直讀)
-      </label>
-    </div>
-
-    <!-- Mode radios (Simplified to 2 Modes) -->
-    <div class="mode-container" id="modeContainer">
-      <div class="tooltip-box">
-        <label class="radio-label">
-          <input type="radio" name="mode" value="copy" checked> 複製照片 (Copy)
-        </label>
-        <span class="info-icon" onclick="alert('💡 複製照片 (Copy)\n\n保留來源資料夾的所有原檔不變，將分類後的照片與影片複製一份放到目標資料夾。（配合雲端省流量防護，100% 不會下載雲端檔案）')">!</span>
-        <div class="tooltip-text">
-          <strong>💡 複製照片 (Copy)</strong><br>
-          保留來源處的所有原檔，複製一份分類後的照片/影片至目標資料夾。
+  <div class="grid">
+    <section class="card" aria-labelledby="sourceHeading">
+      <h2 id="sourceHeading">1. 選擇來源與整理位置</h2>
+      <div class="mode-switch" role="radiogroup" aria-label="來源類型">
+        <div class="mode-option">
+          <input id="modeFolder" type="radio" name="sourceMode" value="folder" checked>
+          <label for="modeFolder"><span class="mode-title">📁 一般資料夾</span><span class="mode-help">本機或外接硬碟中已解壓的照片</span></label>
+        </div>
+        <div class="mode-option">
+          <input id="modeTakeout" type="radio" name="sourceMode" value="takeout_zip">
+          <label for="modeTakeout"><span class="mode-title">📦 Takeout ZIP</span><span class="mode-help">直接讀取已下載的 ZIP，不需事先解壓</span></label>
         </div>
       </div>
 
-      <div class="tooltip-box">
-        <label class="radio-label">
-          <input type="radio" name="mode" value="move"> 移動照片 (Move / 原地與跨資料夾歸檔)
-        </label>
-        <span class="info-icon" onclick="alert('💡 移動照片 (Move)\n\n將照片與影片自動分類並搬移至目標資料夾，歸檔並清理來源處的散落檔案。\n\n提示：若「目標資料夾」填寫與「來源資料夾」相同，即為本機與雲端硬碟 (OneDrive / Google Drive) 的「原地歸檔與清理」！')">!</span>
-        <div class="tooltip-text">
-          <strong>💡 移動照片 (Move)</strong><br>
-          分類搬移至目標資料夾。若目標與來源相同，即為本機/雲端「原地歸檔與清理」。
+      <div class="field">
+        <label for="sourceDir">來源路徑</label>
+        <div class="path-row">
+          <input id="sourceDir" data-testid="source-path" type="text" autocomplete="off" placeholder="請選擇來源資料夾">
+          <div class="path-actions">
+            <button class="btn" data-testid="browse-source" onclick="selectSourceFolder()">選擇資料夾</button>
+            <button class="btn" id="btnZip" data-testid="browse-zip" onclick="selectTakeoutZip()" hidden>選擇 ZIP</button>
+          </div>
         </div>
       </div>
-    </div>
-
-    <!-- Core Options (3 Columns) -->
-    <div class="core-options-grid">
-      <!-- Col 1: Screenshot -->
-      <div class="core-column">
-        <label class="checkbox-label">
-          <input type="checkbox" id="smartScreenshot" checked onchange="onSmartScreenshotChange()"> 📱 截圖／監視器評分排除（≥ 7 分移至 _Excluded/Screenshots）
-        </label>
-        <label class="checkbox-label sub-option">
-          <input type="checkbox" id="screenshotStrict" checked> 僅抓取手機直式截圖 (避免誤判網路梗圖)
-        </label>
-      </div>
-
-      <!-- Col 2: Rename -->
-      <div class="core-column">
-        <label class="checkbox-label">
-          <input type="checkbox" id="renameEnabled" onchange="onRenameEnabledChange()"> 🔢 重新命名照片 (不保留舊檔名)
-        </label>
-        <div id="renameSubOptions" style="margin-top: 4px; padding-left: 22px; display: flex; flex-direction: column; gap: 4px;">
-          <label class="checkbox-label sub-option" style="font-size: 0.8rem;">
-            <input type="radio" name="renameMode" value="date_seq" checked disabled> 📅 拍攝日期+流水號 (2024_05_20_001.jpg)
-          </label>
-          <label class="checkbox-label sub-option" style="font-size: 0.8rem;">
-            <input type="radio" name="renameMode" value="pure_seq" disabled> 🔢 純流水號 (001.jpg, 002.jpg)
-          </label>
+      <div class="field">
+        <label for="destDir">整理工作與歸檔位置</label>
+        <div class="path-row">
+          <input id="destDir" data-testid="destination-path" type="text" autocomplete="off" placeholder="請選擇目標資料夾">
+          <button class="btn" onclick="selectDestFolder()">選擇資料夾</button>
         </div>
       </div>
+    </section>
 
-      <!-- Col 3: GPS -->
-      <div class="core-column">
-        <label class="checkbox-label">
-          <input type="checkbox" id="gpsEnabled"> 🗺️ 依拍照地點建資料夾 (如：台灣_台北市)
-        </label>
+    <section class="card" aria-labelledby="optionsHeading">
+      <h2 id="optionsHeading">2. 分析項目</h2>
+      <div class="options">
+        <label class="check"><input id="screenshotEnabled" type="checkbox" checked><span><strong>螢幕截圖／監視器畫面</strong><small>沿用 7 分制，達門檻才列入審核。</small></span></label>
+        <label class="check"><input id="blurEnabled" type="checkbox" checked><span><strong>模糊照片候選</strong><small>只列入人工審核，不會自動刪除。</small></span></label>
+        <label class="check"><input id="shortVideoEnabled" type="checkbox" checked><span><strong>5 秒內短影片</strong><small>Live Photo 配對影片會先排除。</small></span></label>
+        <label class="check"><input id="similarEnabled" type="checkbox" checked><span><strong>相似照片</strong><small>先依時間與尺寸縮小範圍，不做整庫兩兩比較。</small></span></label>
       </div>
-    </div>
+    </section>
 
-    <!-- Advanced Collapsible Section -->
-    <details>
-      <summary>⚙️ 進階與安全設定 (預設已開啟斷點續傳、重複去重與雲端安全防護)</summary>
-      <div class="advanced-grid">
-        <label class="checkbox-label">
-          <input type="checkbox" id="onedriveProtect" checked> ☁️ 雲端硬碟省流量防護 (OneDrive / Google Drive 防下載)
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="dryRun"> 🧪 模擬測試模式 (不搬移任何檔案，僅產出預覽報表)
-        </label>
-        <label class="checkbox-label" style="grid-column: span 2;">
-          <input type="checkbox" id="sidecarEnabled" checked> 🧾 一併處理照片／影片 Sidecar JSON（保留拍攝時間與 GPS 後設資料）
-        </label>
-        <label class="checkbox-label" style="grid-column: span 2;">
-          <input type="checkbox" id="blurCheck"> 🔍 自動挑出模糊照片 (隔離至 _Blurry 資料夾)
-        </label>
-        <div style="grid-column: span 2; display: flex; align-items: center; gap: 10px; padding-top: 8px; border-top: 1px dashed var(--border-color); margin-top: 4px;">
-          <label for="folderPattern" style="font-weight: 600; font-size: 0.88rem; color: var(--text-main);">📁 資料夾分類層級結構：</label>
-          <select id="folderPattern" style="background-color: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 6px; font-size: 0.88rem; outline: none; cursor: pointer;">
-            <option value="ym" selected>年 / 月 (例: 2024 / 05 / Photos) — 預設</option>
-            <option value="ymd">年 / 月-日 (例: 2024 / 05-20 / Photos)</option>
-            <option value="y">僅按年份 (例: 2024 / Photos)</option>
-          </select>
-        </div>
+    <section class="card full" aria-labelledby="workflowHeading">
+      <h2 id="workflowHeading">3. 依序操作</h2>
+      <div class="workflow">
+        <article class="action">
+          <span class="step">STEP 01</span><h3>開始分析</h3>
+          <p>建立來源索引、MediaGroup、日期決策與 01～06 審核捷徑。原始媒體保持原狀。</p>
+          <div class="action-buttons"><button class="btn primary task-btn" id="btnAnalyze" data-testid="start-analysis" onclick="startAnalysis()">▶ 開始分析</button></div>
+        </article>
+        <article class="action">
+          <span class="step">STEP 02</span><h3>人工審核</h3>
+          <p>查看 01～06 捷徑。要排除的項目只需把捷徑移入 99_待刪除；刪除其他捷徑不影響原檔。</p>
+          <div class="action-buttons"><button class="btn safe task-btn" onclick="openReviewFolder()">📂 開啟審核資料夾</button></div>
+        </article>
+        <article class="action">
+          <span class="step">STEP 03</span><h3>處理待刪除</h3>
+          <p>先顯示 DRY_RUN 摘要，再次確認後才把完整 MediaGroup 移到 Quarantine，沒有永久刪除。</p>
+          <div class="action-buttons"><button class="btn warn task-btn" data-testid="process-pending" onclick="processPendingDelete()">🧰 處理待刪除</button><button class="btn task-btn" onclick="openQuarantineFolder()">開啟隔離區</button></div>
+        </article>
+        <article class="action">
+          <span class="step">STEP 04</span><h3>依日期整理</h3>
+          <p>最後才將通過日期檢查的完整 MediaGroup 搬到 YYYY／MM／Photos 或 Videos。</p>
+          <div class="action-buttons"><button class="btn primary task-btn" data-testid="archive-by-date" onclick="archiveByDate()">📅 依日期整理</button></div>
+        </article>
+        <article class="action">
+          <span class="step">安全控制</span><h3>停止目前工作</h3>
+          <p>停止後保留 SQLite 狀態；再次開始會沿用同一未完成任務且不覆寫既有捷徑。為維持完整判定，部分媒體可能重新讀取。</p>
+          <div class="action-buttons"><button class="btn danger" id="btnStop" onclick="stopProcess()" disabled>■ 停止</button></div>
+        </article>
+        <article class="action">
+          <span class="step">結果位置</span><h3>目標資料夾</h3>
+          <p>開啟工作根目錄，查看日期歸檔結果、報表與所有受管理資料夾。</p>
+          <div class="action-buttons"><button class="btn task-btn" onclick="openDestination()">📂 開啟目標資料夾</button></div>
+        </article>
       </div>
-    </details>
+    </section>
+
+    <section class="card full" aria-labelledby="progressHeading">
+      <h2 id="progressHeading">執行狀態</h2>
+      <div class="dashboard">
+        <div class="metric"><span>目前階段</span><strong id="metricStage">待命</strong></div>
+        <div class="metric"><span>處理進度</span><strong id="metricProgress">0 / 0</strong></div>
+        <div class="metric"><span>計畫群組</span><strong id="metricPlanned">0</strong></div>
+        <div class="metric"><span>完成群組</span><strong id="metricCompleted">0</strong></div>
+      </div>
+      <div class="progress-track"><div id="progressBar" class="progress"></div></div>
+      <div id="currentFile" class="current">等待開始…</div>
+      <div id="consoleBox" class="console" aria-live="polite">
+        <div class="log info">🚀 系統準備就緒。請先選擇來源與目標，再按「開始分析」。</div>
+      </div>
+      <div class="footer-actions">
+        <div class="note">所有正式搬移都會先顯示預覽摘要並要求再次確認。</div>
+        <button class="btn" onclick="clearLog()">清空日誌</button>
+      </div>
+    </section>
   </div>
-
-  <!-- Controls -->
-  <div class="controls-bar">
-    <button class="btn btn-primary" id="btnStart" onclick="startProcess()">▶ 開始整理</button>
-    <button class="btn btn-warning" id="btnPause" disabled onclick="togglePause()">⏸ 暫停</button>
-    <button class="btn btn-danger" id="btnStop" disabled onclick="stopProcess()">⏹ 停止</button>
-    <button class="btn" id="btnOpenDest" style="background: rgba(56, 189, 248, 0.15); color: var(--accent-color); border: 1px solid var(--accent-color);" onclick="openDestFolder()">📂 開啟目標資料夾</button>
-    <button class="btn" id="btnMinimizeTray" style="background: rgba(148, 163, 184, 0.15); color: var(--text-main); border: 1px solid var(--border-color);" onclick="minimizeToTray()">📌 縮小至系統列</button>
-  </div>
-
-  <!-- Dashboard & Log -->
-  <div class="card">
-    <div class="card-title">📊 即時監控儀表板</div>
-    <div class="stats-cards">
-      <div class="stat-card">
-        <div class="label">傳輸速度</div>
-        <div class="value" id="lblSpeed">0.0 MB/s</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">預估剩餘時間</div>
-        <div class="value" id="lblEta">--</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">處理容量進度</div>
-        <div class="value" id="lblSizeProg">0 MB / 0 MB</div>
-      </div>
-    </div>
-
-    <div class="progress-bar-bg">
-      <div class="progress-bar-fill" id="progressBar"></div>
-    </div>
-    <div class="current-file" id="lblCurrent">等待開始...</div>
-
-    <div class="console-header">
-      <label style="font-weight: 600; font-size: 0.85rem;">執行日誌 Console：</label>
-      <button class="btn" style="padding: 2px 8px; font-size: 0.75rem;" onclick="clearLog()">清空日誌</button>
-    </div>
-    <div class="console-box" id="consoleBox">
-      <div class="log-line log-info">🚀 系統準備就緒，請設定資料夾後點擊「開始整理」。</div>
-    </div>
-  </div>
-</div>
+</main>
 
 <script>
-  let isRunning = false;
-  let isPaused = false;
+  let isBusy = false;
 
-  window.addEventListener('pywebviewready', function() {
-    pywebview.api.get_initial_config().then(config => {
-      if (config) {
-        document.getElementById('sourceDir').value = config.source_dir || '';
-        document.getElementById('destDir').value = config.dest_dir || '';
-        if (config.folder_pattern) {
-          document.getElementById('folderPattern').value = config.folder_pattern;
-        }
-        if (config.rename_mode) {
-          const r = document.querySelector(`input[name="renameMode"][value="${config.rename_mode}"]`);
-          if (r) r.checked = true;
-        }
-        document.getElementById('sidecarEnabled').checked = config.sidecar_enabled !== false;
-      }
-    });
-
-    setInterval(pollUpdates, 200);
+  window.addEventListener('pywebviewready', async () => {
+    const config = await pywebview.api.get_initial_config();
+    if (config) {
+      document.getElementById('sourceDir').value = config.source_dir || '';
+      document.getElementById('destDir').value = config.dest_dir || '';
+    }
+    setInterval(pollUpdates, 250);
   });
 
-  function pollUpdates() {
-    if (!window.pywebview || !pywebview.api) return;
-    pywebview.api.get_updates().then(data => {
-      if (!data) return;
-      
-      if (data.logs && data.logs.length > 0) {
-        data.logs.forEach(item => {
-          appendLog(item.msg, item.level);
-        });
-      }
-      
-      if (data.progress) {
-        updateProgress(data.progress);
-      }
+  document.querySelectorAll('input[name="sourceMode"]').forEach(input => {
+    input.addEventListener('change', updateSourceMode);
+  });
 
-      if (data.finished_msg) {
-        onProcessFinished(data.finished_msg);
-      }
-    }).catch(err => {});
-  }
-
-  function checkPyWebview() {
+  function apiReady() {
     if (!window.pywebview || !pywebview.api) {
-      alert("⚠️ 請透過雙擊 start_organizer.bat 或執行 python main.py 啟動程式，方可選取本機資料夾！");
+      alert('請從 start_organizer.bat 或 Python 主程式啟動，才能操作本機檔案。');
       return false;
     }
     return true;
   }
 
-  function selectSourceFolder() {
-    if (!checkPyWebview()) return;
-    pywebview.api.select_source_folder().then(folder => {
-      if (folder) document.getElementById('sourceDir').value = folder;
-    });
-  }
-
-  function selectDestFolder() {
-    if (!checkPyWebview()) return;
-    pywebview.api.select_dest_folder().then(folder => {
-      if (folder) document.getElementById('destDir').value = folder;
-    });
-  }
-
-  function onSmartScreenshotChange() {
-    const isChecked = document.getElementById('smartScreenshot').checked;
-    const strict = document.getElementById('screenshotStrict');
-    strict.disabled = !isChecked;
-    if (!isChecked) strict.checked = false;
-  }
-
-  function onWorkTypeChange() {
-    const workType = document.querySelector('input[name="work_type"]:checked').value;
-    const moveRadio = document.querySelector('input[name="mode"][value="move"]');
-    const copyRadio = document.querySelector('input[name="mode"][value="copy"]');
-    if (workType === 'takeout_zip') {
-      copyRadio.checked = true;
-      moveRadio.disabled = true;
-    } else {
-      moveRadio.disabled = false;
-    }
-  }
-
-  function onRenameEnabledChange() {
-    const enabled = document.getElementById('renameEnabled').checked;
-    const radios = document.getElementsByName('renameMode');
-    radios.forEach(r => r.disabled = !enabled);
-  }
-
-  function getConfigPayload() {
-    const renameModeRadio = document.querySelector('input[name="renameMode"]:checked');
-    const workTypeRadio = document.querySelector('input[name="work_type"]:checked');
-    const mode = document.querySelector('input[name="mode"]:checked').value;
+  function getConfig() {
     return {
-      work_type: workTypeRadio ? workTypeRadio.value : 'general',
-      source_dir: document.getElementById('sourceDir').value,
-      dest_dir: document.getElementById('destDir').value,
-      mode: mode,
-      clean_empty: (mode === 'move'),
-      rename_enabled: document.getElementById('renameEnabled').checked,
-      rename_mode: renameModeRadio ? renameModeRadio.value : 'date_seq',
-      gps_enabled: document.getElementById('gpsEnabled').checked,
-      resume_enabled: true,
-      blur_check_enabled: document.getElementById('blurCheck').checked,
-      skip_existing: true,
-      dry_run: document.getElementById('dryRun').checked,
-      smart_screenshot: document.getElementById('smartScreenshot').checked,
-      screenshot_strict_mode: document.getElementById('screenshotStrict').checked,
-      onedrive_protect: document.getElementById('onedriveProtect').checked,
-      folder_pattern: document.getElementById('folderPattern').value,
-      sidecar_enabled: document.getElementById('sidecarEnabled').checked
+      source_mode: document.querySelector('input[name="sourceMode"]:checked').value,
+      source_dir: document.getElementById('sourceDir').value.trim(),
+      dest_dir: document.getElementById('destDir').value.trim(),
+      screenshot_enabled: document.getElementById('screenshotEnabled').checked,
+      blur_enabled: document.getElementById('blurEnabled').checked,
+      short_video_enabled: document.getElementById('shortVideoEnabled').checked,
+      similar_enabled: document.getElementById('similarEnabled').checked
     };
   }
 
-  function startProcess() {
-    if (!checkPyWebview()) return;
-    const config = getConfigPayload();
-    if (!config.source_dir) {
-      alert("請選擇來源資料夾！");
+  function validateConfig() {
+    const config = getConfig();
+    if (!config.source_dir) { alert('請先選擇來源路徑。'); return null; }
+    if (!config.dest_dir) { alert('請先選擇目標資料夾。'); return null; }
+    return config;
+  }
+
+  function updateSourceMode() {
+    const takeout = document.getElementById('modeTakeout').checked;
+    document.getElementById('btnZip').hidden = !takeout;
+    document.getElementById('sourceDir').placeholder = takeout
+      ? '請選擇 Takeout ZIP，或包含多個 ZIP 的資料夾'
+      : '請選擇包含照片／影片的資料夾';
+  }
+
+  async function selectSourceFolder() {
+    if (!apiReady()) return;
+    const path = await pywebview.api.select_source_folder();
+    if (path) document.getElementById('sourceDir').value = path;
+  }
+  async function selectTakeoutZip() {
+    if (!apiReady()) return;
+    const path = await pywebview.api.select_takeout_zip();
+    if (path) document.getElementById('sourceDir').value = path;
+  }
+  async function selectDestFolder() {
+    if (!apiReady()) return;
+    const path = await pywebview.api.select_dest_folder();
+    if (path) document.getElementById('destDir').value = path;
+  }
+
+  function setBusy(busy, stage = '') {
+    isBusy = busy;
+    document.querySelectorAll('.task-btn').forEach(button => button.disabled = busy);
+    document.getElementById('btnStop').disabled = !busy;
+    const badge = document.getElementById('statusBadge');
+    badge.textContent = busy ? '處理中' : '準備就緒';
+    badge.className = 'status' + (busy ? ' running' : '');
+    if (stage) document.getElementById('metricStage').textContent = stage;
+  }
+
+  async function startAnalysis() {
+    if (!apiReady() || isBusy) return;
+    const config = validateConfig();
+    if (!config) return;
+    setBusy(true, '分析');
+    appendLog('🚀 已送出唯讀分析任務。', 'info');
+    const result = await pywebview.api.start_v3_analysis(config);
+    if (result && result.error) {
+      setBusy(false, '錯誤');
+      appendLog('❌ ' + result.error, 'error');
+      alert(result.error);
+    }
+  }
+
+  async function processPendingDelete() {
+    if (!apiReady() || isBusy) return;
+    const config = validateConfig();
+    if (!config) return;
+    setBusy(true, '待刪除預覽');
+    const preview = await pywebview.api.preview_quarantine(config);
+    setBusy(false, '待命');
+    if (showApiError(preview)) return;
+    updateActionMetrics(preview);
+    if (!preview.planned_group_count) {
+      alert('99_待刪除目前沒有可處理的 MediaGroup。');
       return;
     }
-    if (!config.dest_dir) {
-      config.dest_dir = config.source_dir;
-      document.getElementById('destDir').value = config.source_dir;
-    }
+    const message = `預計移動 ${preview.planned_group_count} 組（${formatBytes(preview.planned_bytes)}）到 Quarantine。\n\n不會永久刪除。確定執行嗎？`;
+    if (!confirm(message)) return;
+    setBusy(true, '移至 Quarantine');
+    const result = await pywebview.api.execute_quarantine(config);
+    setBusy(false, '待命');
+    if (showApiError(result)) return;
+    updateActionMetrics(result);
+    appendLog(`✅ 已移至 Quarantine：${result.completed_group_count} 組。`, 'success');
+    alert(`處理完成：${result.completed_group_count} 組；錯誤 ${result.errors.length}。`);
+  }
 
-    setUiState(true);
-    pywebview.api.start_process(config).then(res => {
-      if (res && res.error) {
-        alert(res.error);
-        setUiState(false);
+  async function archiveByDate() {
+    if (!apiReady() || isBusy) return;
+    const config = validateConfig();
+    if (!config) return;
+    setBusy(true, '歸檔預覽');
+    const preview = await pywebview.api.preview_archive(config);
+    setBusy(false, '待命');
+    if (showApiError(preview)) return;
+    updateActionMetrics(preview);
+    if (!preview.planned_group_count) {
+      alert('目前沒有通過日期檢查且可歸檔的 MediaGroup。');
+      return;
+    }
+    const message = `預計將 ${preview.planned_group_count} 組（${formatBytes(preview.planned_bytes)}）依日期整組搬移。\n\n日期異常與 99_待刪除項目會跳過。確定執行嗎？`;
+    if (!confirm(message)) return;
+    setBusy(true, '日期歸檔');
+    const result = await pywebview.api.execute_archive(config);
+    setBusy(false, '待命');
+    if (showApiError(result)) return;
+    updateActionMetrics(result);
+    appendLog(`✅ 日期歸檔完成：${result.completed_group_count} 組。`, 'success');
+    alert(`歸檔完成：${result.completed_group_count} 組；錯誤 ${result.errors.length}。`);
+  }
+
+  async function openReviewFolder() {
+    if (!apiReady()) return;
+    const config = validateConfig(); if (!config) return;
+    const result = await pywebview.api.open_review_folder(config); showApiError(result);
+  }
+  async function openQuarantineFolder() {
+    if (!apiReady()) return;
+    const config = validateConfig(); if (!config) return;
+    const result = await pywebview.api.open_quarantine_folder(config); showApiError(result);
+  }
+  async function openDestination() {
+    if (!apiReady()) return;
+    const config = validateConfig(); if (!config) return;
+    const result = await pywebview.api.open_dest_folder(config.dest_dir); showApiError(result);
+  }
+  async function stopProcess() {
+    if (!apiReady()) return;
+    await pywebview.api.stop_process();
+    appendLog('⚠️ 已送出停止要求，正在安全結束目前檔案。', 'warning');
+  }
+
+  async function pollUpdates() {
+    if (!window.pywebview || !pywebview.api) return;
+    try {
+      const data = await pywebview.api.get_updates();
+      (data.logs || []).forEach(item => appendLog(item.msg, item.level));
+      if (data.progress) updateProgress(data.progress);
+      if (data.finished_msg) {
+        setBusy(false, '完成');
+        alert(data.finished_msg);
       }
-    });
-  }
-
-  function togglePause() {
-    if (!checkPyWebview()) return;
-    if (!isPaused) {
-      pywebview.api.pause_process().then(() => {
-        isPaused = true;
-        document.getElementById('btnPause').textContent = "▶ 繼續";
-        updateStatus("已暫停", "paused");
-      });
-    } else {
-      pywebview.api.resume_process().then(() => {
-        isPaused = false;
-        document.getElementById('btnPause').textContent = "⏸ 暫停";
-        updateStatus("整理中", "running");
-      });
-    }
-  }
-
-  function openDestFolder() {
-    if (!checkPyWebview()) return;
-    const path = document.getElementById('destDir').value || document.getElementById('sourceDir').value;
-    pywebview.api.open_dest_folder(path).then(res => {
-      if (res && res.error) alert(res.error);
-    });
-  }
-
-  function minimizeToTray() {
-    if (!checkPyWebview()) return;
-    pywebview.api.minimize_to_tray();
-  }
-
-  function stopProcess() {
-    if (!checkPyWebview()) return;
-    if (confirm("確定要停止目前的任務嗎？")) {
-      pywebview.api.stop_process().then(() => {
-        setUiState(false);
-        updateStatus("靜候中", "");
-      });
-    }
-  }
-
-  function setUiState(running) {
-    isRunning = running;
-    isPaused = false;
-    document.getElementById('btnStart').disabled = running;
-    document.getElementById('btnPause').disabled = !running;
-    document.getElementById('btnStop').disabled = !running;
-    document.getElementById('btnPause').textContent = "⏸ 暫停";
-    updateStatus(running ? "整理中" : "靜候中", running ? "running" : "");
-  }
-
-  function updateStatus(text, className) {
-    const badge = document.getElementById('statusBadge');
-    badge.textContent = text;
-    badge.className = "status-badge " + className;
+    } catch (_) { /* 應用程式關閉時停止輪詢即可 */ }
   }
 
   function updateProgress(data) {
-    const total = parseInt(data.total);
-    const current = parseInt(data.current);
-    const percent = total > 0 ? ((current / total) * 100).toFixed(1) : 0;
-    
-    document.getElementById('progressBar').style.width = percent + "%";
-    document.getElementById('lblCurrent').textContent = "正在處理: " + data.filename;
+    const current = Number(data.current || 0);
+    const total = Number(data.total || 0);
+    const percent = total > 0 ? Math.min(100, current / total * 100) : 0;
+    document.getElementById('progressBar').style.width = percent + '%';
+    document.getElementById('metricProgress').textContent = `${current} / ${total}`;
+    document.getElementById('metricStage').textContent = data.stage || '處理中';
+    document.getElementById('currentFile').textContent = data.filename || '';
+  }
 
-    if (data.speed !== undefined) {
-      const speedMB = (parseFloat(data.speed) / (1024 * 1024)).toFixed(1);
-      document.getElementById('lblSpeed').textContent = speedMB + " MB/s";
+  function updateActionMetrics(result) {
+    document.getElementById('metricPlanned').textContent = result.planned_group_count || 0;
+    document.getElementById('metricCompleted').textContent = result.completed_group_count || 0;
+  }
+
+  function showApiError(result) {
+    if (result && result.error) {
+      appendLog('❌ ' + result.error, 'error');
+      alert(result.error);
+      return true;
     }
-
-    if (data.eta !== undefined) {
-      const eta = parseInt(data.eta);
-      const m = Math.floor(eta / 60);
-      const s = eta % 60;
-      const h = Math.floor(m / 60);
-      document.getElementById('lblEta').textContent = h > 0 ? `${h}h ${m % 60}m` : `${m}m ${s}s`;
+    if (result && result.errors && result.errors.length) {
+      result.errors.forEach(error => appendLog('⚠️ ' + error, 'warning'));
     }
-
-    if (data.processed_size !== undefined && data.total_size !== undefined) {
-      document.getElementById('lblSizeProg').textContent = `${fmtSize(data.processed_size)} / ${fmtSize(data.total_size)}`;
-    }
+    return false;
   }
 
-  function appendLog(msg, level) {
-    const box = document.getElementById('consoleBox');
-    const div = document.createElement('div');
-    div.className = "log-line log-" + (level || 'info');
-    div.textContent = msg;
-    box.appendChild(div);
-    box.scrollTop = box.scrollHeight;
+  function appendLog(message, level = 'info') {
+    const line = document.createElement('div');
+    line.className = 'log ' + (level || 'info');
+    line.textContent = message;
+    const consoleBox = document.getElementById('consoleBox');
+    consoleBox.appendChild(line);
+    consoleBox.scrollTop = consoleBox.scrollHeight;
+  }
+  function clearLog() { document.getElementById('consoleBox').replaceChildren(); }
+  function formatBytes(bytes) {
+    let value = Number(bytes || 0); const units = ['B', 'KB', 'MB', 'GB', 'TB']; let index = 0;
+    while (value >= 1024 && index < units.length - 1) { value /= 1024; index++; }
+    return `${value.toFixed(index ? 1 : 0)} ${units[index]}`;
   }
 
-  function onProcessFinished(msg) {
-    setUiState(false);
-    appendLog("💡 點擊控制列的 [📂 開啟目標資料夾] 按鈕可直接檢視整理成果。", "success");
-    if (msg) alert(msg);
-  }
-
-  function clearLog() {
-    document.getElementById('consoleBox').innerHTML = '';
-  }
-
-  function fmtSize(bytes) {
-    let size = parseFloat(bytes);
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    for (let u of units) {
-      if (size < 1024.0) return `${size.toFixed(1)} ${u}`;
-      size /= 1024.0;
-    }
-    return `${size.toFixed(1)} PB`;
-  }
+  updateSourceMode();
 </script>
 </body>
 </html>

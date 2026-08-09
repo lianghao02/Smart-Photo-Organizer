@@ -72,7 +72,8 @@ class DateAnomalyReviewer:
         self.workspace = workspace
         self.low_confidence_threshold = max(0, min(100, int(low_confidence_threshold)))
 
-    def _issue(self, target: DateReviewTarget) -> Optional[str]:
+    def issue_for(self, target: DateReviewTarget) -> Optional[str]:
+        """回傳需人工審核的日期原因；`None` 代表日期可供後續歸檔。"""
         if target.conflict:
             return "高可信度日期來源互相衝突"
         if not target.capture_date:
@@ -129,7 +130,7 @@ class DateAnomalyReviewer:
 
         for group_id in sorted(unique):
             target = unique[group_id]
-            issue = self._issue(target)
+            issue = self.issue_for(target)
             result.reviewed_count += 1
             audit_rows.append([
                 target.group_id,

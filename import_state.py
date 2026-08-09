@@ -384,6 +384,28 @@ class TakeoutStateManager:
             row = cursor.fetchone()
             return dict(row) if row else None
 
+    def find_latest_job(
+        self,
+        src_dir: str,
+        dst_dir: str,
+        job_type: str,
+    ) -> Optional[Dict[str, Any]]:
+        """取得相同來源、目標與任務類型最近一次工作。"""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE src_dir = ? AND dst_dir = ? AND job_type = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (
+                    os.path.abspath(src_dir),
+                    os.path.abspath(dst_dir),
+                    job_type,
+                ),
+            ).fetchone()
+            return dict(row) if row else None
+
     def update_job_status(self, job_id: str, status: str):
         now = datetime.datetime.now().isoformat()
         with self._get_conn() as conn:
