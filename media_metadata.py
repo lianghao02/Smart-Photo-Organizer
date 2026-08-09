@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期/異常隔離決策模組 (v4.2 精準 7 分截圖引擎與共用設定版)
-包含符合 ACID 的 Sidecar JSON 原子落碟 (write_sidecar_atomic) 與完整 7 分截圖/監視器畫面過濾 (calculate_screenshot_score)。
+Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期/異常隔離決策模組 (v4.5 冪等 Sidecar 落碟與精準評分版)
+提供符合 ACID 的 Sidecar JSON 原子落碟與冪等檢查 (write_sidecar_atomic) 及完整 7 分截圖/監視器畫面過濾。
 """
 
 import os
@@ -13,16 +13,29 @@ from typing import Optional, Dict, Any, Tuple, List
 
 def write_sidecar_atomic(sidecar_bytes: bytes, target_json_path: str) -> Tuple[bool, Optional[str]]:
     """
-    Sidecar JSON 原子落碟寫入 helper:
-    1. 寫入 <target_json_path>.part
-    2. flush() 並呼叫 os.fsync() 強制落碟
-    3. 執行 os.rename() / 'xb' 原子排他更名
-    4. 發生 FileExistsError 或 OSError 時刪除 .part 檔並回傳 (False, error_msg)
+    Sidecar JSON 原子落碟寫入與冪等性檢查 Helper:
+    1. 若目標 .json 已存在：比較內容位元組。完全相符視為先前寫入成功 (回傳 True, None)；不一致標記衝突 (回傳 False, SIDECAR_CONFLICT)。
+    2. 若目標檔不存在：寫入 <target_json_path>.part，flush() 並 fsync() 後執行 os.rename() 原子更名。
+    3. 發生碰撞或 OSError 時自動清理 .part 檔並回傳 (False, error_msg)。
     """
     if not sidecar_bytes or not target_json_path:
         return False, "Sidecar 位元組或目標路徑為空"
 
     json_part = target_json_path + ".part"
+
+    # 1. 既有 Sidecar 冪等性檢查 (解決中斷後二次執行時 [WinError 183] 碰撞)
+    if os.path.exists(target_json_path):
+        try:
+            with open(target_json_path, 'rb') as existing_f:
+                existing_bytes = existing_f.read()
+                if existing_bytes == sidecar_bytes:
+                    return True, None
+                else:
+                    return False, f"Sidecar 檔案已存在且內容不一致 (SIDECAR_CONFLICT): {target_json_path}"
+        except OSError as e:
+            return False, f"讀取既有 Sidecar 失敗: {e}"
+
+    # 2. 原子寫入 .part 檔並以 os.rename 排他更名
     try:
         with open(json_part, 'xb') as jf:
             jf.write(sidecar_bytes)
@@ -30,7 +43,19 @@ def write_sidecar_atomic(sidecar_bytes: bytes, target_json_path: str) -> Tuple[b
             os.fsync(jf.fileno())
         os.rename(json_part, target_json_path)
         return True, None
-    except (FileExistsError, OSError) as e:
+    except FileExistsError:
+        if os.path.exists(json_part):
+            try: os.remove(json_part)
+            except OSError: pass
+        if os.path.exists(target_json_path):
+            try:
+                with open(target_json_path, 'rb') as existing_f:
+                    if existing_f.read() == sidecar_bytes:
+                        return True, None
+            except OSError:
+                pass
+        return False, f"Sidecar 檔案已存在 (FileExistsError): {target_json_path}"
+    except OSError as e:
         if os.path.exists(json_part):
             try: os.remove(json_part)
             except OSError: pass
@@ -52,7 +77,7 @@ class MediaMetadataExtractor:
         (2400, 1080), (2532, 1170), (2340, 1080)
     }
 
-    # 低可信度日期門檻 (與主 Processor 保持一致)
+    # 低可信度日期門檻
     DATE_LOW_CONFIDENCE_THRESHOLD = 50
 
     @staticmethod
@@ -86,7 +111,7 @@ class MediaMetadataExtractor:
         score = 0
         reasons: List[str] = []
 
-        # 1. 檔名與監視器頻道關鍵字評分 (注：LINE 相簿 line_album_ 不記 7 分)
+        # 1. 檔名與監視器頻道關鍵字評分 (LINE 相簿 line_album_ 不記 7 分)
         if any(kw in fn_lower for kw in ('screenshot', 'screen_shot', '螢幕快照', '螢幕截圖', '截圖')):
             score += 7
             reasons.append("截圖檔名(+7)")

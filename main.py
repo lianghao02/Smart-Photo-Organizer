@@ -2571,13 +2571,12 @@ class WebBridge:
             self._on_log(f"  • 跳過重複內容 (DUPLICATE_SKIPPED)：{skipped_dup_count:,} 個", "info")
             self._on_log(f"  • Sidecar 精準配對數：{report['matched_pair_count']:,} 組", "info")
             self._on_log(f"  • 宣告解壓後總容量：{report['total_uncompressed_gb']} GB", "info")
-            total_unresolved = pipeline_errors + unresolved_db_errors
-            if total_unresolved > 0:
-                self._on_log(f"  ⚠️ 失敗/未解決錯誤成員：{total_unresolved} 個 (本次失敗: {pipeline_errors}, 歷史未解決: {unresolved_db_errors})", "warning")
+            if pipeline_errors > 0 or unresolved_db_errors > 0:
+                self._on_log(f"  ⚠️ 錯誤摘要 ➔ 本次失敗事件：{pipeline_errors} 個 | 資料庫在冊未解決成員：{unresolved_db_errors} 個", "warning")
             self._on_log("=" * 60, "info")
             self._on_log(f"=== ✅ Phase 4 逐檔直讀與 Sidecar 歸檔完成！狀態: {final_status} ===", "info")
 
-            msg = f"Takeout 直讀歸檔完成 ({final_status})！\n成功歸檔: {archived_count} 個\n跳過重複: {skipped_dup_count} 個\n未解決錯誤: {total_unresolved} 個 (本次: {pipeline_errors}, 歷史: {unresolved_db_errors})"
+            msg = f"Takeout 直讀歸檔完成 ({final_status})！\n成功歸檔: {archived_count} 個\n跳過重複: {skipped_dup_count} 個\n本次失敗事件: {pipeline_errors} 個\n在冊未解決成員: {unresolved_db_errors} 個"
             with self._queue_lock:
                 self._process_finished_msg = msg
             self._on_status("paused")

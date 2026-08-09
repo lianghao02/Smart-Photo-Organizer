@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 4.4 終極測試與 Sidecar-Only 重試單元測試
+Google Takeout ZIP 匯入引擎 Phase 4.5 終極測試與 Sidecar 冪等落碟單元測試
 驗證 1080x2400 PNG/JPG 無關鍵字截圖 (評分 >= 7)、經 LINE 傳送的截圖 (評分 >= 7)、普通 4:3 LINE 照片 (評分 < 7)
-以及 去重 candidate SHA-256 校驗、Sidecar-Only 免解壓重試與 COMPLETED_WITH_ERRORS 續傳修復。
+以及 Sidecar 冪等落碟 (既有相同內容成功、不同內容衝突)、Sidecar-Only 免解壓重試與去重 SHA-256 驗證。
 """
 
 import os
@@ -136,23 +136,27 @@ class TestTakeoutPhase4(unittest.TestCase):
         expected_dir = os.path.join(self.dst_dir, "_Review", "LowConfidenceDate", "2026", "Photos")
         self.assertEqual(os.path.normpath(meta_res['target_dir']), os.path.normpath(expected_dir))
 
-    def test_write_sidecar_atomic_success_collision_and_cleanup(self):
-        """驗證 write_sidecar_atomic 成功寫入、檔碰撞 FileExistsError 與 .json.part 清理"""
+    def test_write_sidecar_atomic_idempotency_and_conflict(self):
+        """驗證 write_sidecar_atomic 冪等性：既有相同 JSON 內容成功回傳 True，不同內容回傳 SIDECAR_CONFLICT"""
         json_final = os.path.join(self.dst_dir, "test_output.jpg.json")
         json_bytes = b'{"photoTakenTime":{"timestamp":"1529064000"}}'
 
-        # 1. 成功落碟
+        # 1. 首次寫入成功
         ok1, err1 = media_metadata.write_sidecar_atomic(json_bytes, json_final)
         self.assertTrue(ok1)
         self.assertIsNone(err1)
         self.assertTrue(os.path.exists(json_final))
-        self.assertFalse(os.path.exists(json_final + ".part"))
 
-        # 2. 檔已存在引發碰撞 ➔ 回傳 False 且未拋出例外，.part 檔自動清理
+        # 2. 既有檔存在但內容相同 (冪等重試) ➔ 回傳 True 視為成功解除錯誤
         ok2, err2 = media_metadata.write_sidecar_atomic(json_bytes, json_final)
-        self.assertFalse(ok2)
-        self.assertIsNotNone(err2)
-        self.assertFalse(os.path.exists(json_final + ".part"))
+        self.assertTrue(ok2)
+        self.assertIsNone(err2)
+
+        # 3. 既有檔存在且內容不同 ➔ 回傳 False 且標記 SIDECAR_CONFLICT
+        different_bytes = b'{"photoTakenTime":{"timestamp":"9999999999"}}'
+        ok3, err3 = media_metadata.write_sidecar_atomic(different_bytes, json_final)
+        self.assertFalse(ok3)
+        self.assertIn("SIDECAR_CONFLICT", err3)
 
     def test_completed_with_errors_resumption_and_sidecar_retry_only(self):
         """驗證 COMPLETED_WITH_ERRORS 標記 sidecar_retry_only 並由去重重新比對實體檔案 SHA-256"""
@@ -188,7 +192,7 @@ class TestTakeoutPhase4(unittest.TestCase):
         corrupted_dest = os.path.join(self.dst_dir, "corrupted.jpg")
         with open(corrupted_dest, 'wb') as f:
             f.write(b"corrupted content")
-        
+
         m_bad = m.copy()
         m_bad['member_index'] = 1
         mid_bad = state_mgr.register_member(m_bad)
