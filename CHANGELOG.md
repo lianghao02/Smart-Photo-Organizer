@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 建立 v3.0 統一來源索引、SidecarMatcher 與 MediaGroup／Live Photo 配對基礎。
+- 建立 `_Review`／`_ReviewCache` 工作區、SQLite ReviewEntry 與 Windows 捷徑安全驗證骨架。
+
+### 修正
+
+- 防止不同 ZIP、不同檔名編號與不支援格式被誤組為 Live Photo 或 RAW 配對。
+- MediaGroup 與 ReviewEntry 寫入改為冪等並補上跨任務主鍵與允許根目錄防護。
+
 ### 文件
 
 - 建立 v3.0 產品規格、架構、實作計畫、目前任務與 UI／UX 規格。
@@ -17,4 +27,3 @@
 - 照片／影片日期候選與可信度決策。
 - 7 分制螢幕截圖與監視器畫面辨識。
 - Google Takeout ZIP 唯讀掃描、單檔串流解壓、SQLite 續傳與 Sidecar 配對基礎。
-

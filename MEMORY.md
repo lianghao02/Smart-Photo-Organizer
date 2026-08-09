@@ -14,6 +14,8 @@
 - MediaGroup 媒體配對必須限制在相同來源類型、相同 ZIP 指紋、相同邏輯目錄與完全相同 stem；不可跨 ZIP 或移除 `(1)` 編號後猜測配對。
 - Live Photo 僅接受 HEIC/JPEG + MOV/MP4，RAW 配對僅接受 RAW + JPEG；同 stem 並不足以證明兩個檔案屬於同組。
 - MediaGroup SQLite 寫入必須冪等，重跑同一群組時不得累積重複的 `media_group_members`。
+- Review 捷徑採 `ReviewEntry ID__可讀檔名.lnk`；使用者移至 `99_待刪除` 後仍以 ID 回查 SQLite，不信任捷徑檔名或目標本身。
+- ZIP 審核快取必須固定在 `_ReviewCache/<job_id>/<group_id>`，呼叫端不得自訂任意 cache 路徑。
 
 ## 📦 外部依賴追蹤
 
@@ -45,3 +47,4 @@
 - 2026-08-09：確立 v3.0 採人工審核優先、MediaGroup 原子處理、捷徑 Review 與 Quarantine 流程。
 - 2026-08-09：決定先完成 Phase 0 Takeout 基線驗收，再進入 v3.0 Phase 1；UI 最終整理延至 Phase 10。
 - 2026-08-09：完成 v3.0 Phase 2 Codex 獨立複查；收斂 Live Photo／RAW 配對範圍，補上跨 ZIP、跨任務與 SQLite 冪等防護。
+- 2026-08-09：完成 v3.0 Phase 3 Review Workspace 骨架；確立 SQLite 權威 ReviewEntry、零覆寫捷徑與允許根目錄驗證。

@@ -41,7 +41,7 @@ class JobType:
 
 
 class TakeoutStateManager:
-    CURRENT_SCHEMA_VERSION = 4
+    CURRENT_SCHEMA_VERSION = 5
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -161,6 +161,28 @@ class TakeoutStateManager:
             );
             """)
 
+            # v3.0 Review Workspace 權威審核紀錄。
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS review_entries (
+                review_entry_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                score REAL,
+                reason TEXT,
+                shortcut_path TEXT NOT NULL,
+                target_path TEXT NOT NULL,
+                cache_path TEXT,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                error_msg TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES jobs(job_id),
+                FOREIGN KEY (group_id) REFERENCES media_groups(group_id) ON DELETE CASCADE,
+                UNIQUE (job_id, group_id, category)
+            );
+            """)
+
             # 常用查詢索引
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_normalized_path ON members(normalized_path);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_crc_size ON members(member_crc, uncompressed_size);")
@@ -169,6 +191,9 @@ class TakeoutStateManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_archives_fingerprint ON archives(fingerprint);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_media_groups_job ON media_groups(job_id);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_mg_members_group ON media_group_members(group_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_review_entries_job ON review_entries(job_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_review_entries_group ON review_entries(group_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_review_entries_status ON review_entries(job_id, status);")
 
     def _migrate_db(self):
         with self._get_conn() as conn:
@@ -707,3 +732,99 @@ class TakeoutStateManager:
     def list_media_groups_for_job(self, job_id: str) -> List[Dict[str, Any]]:
         """向下相容 Phase 2 初版方法名稱。"""
         return self.list_media_groups(job_id)
+
+    def upsert_review_entry(
+        self,
+        review_entry_id: str,
+        job_id: str,
+        group_id: str,
+        category: str,
+        shortcut_path: str,
+        target_path: str,
+        score: Optional[float] = None,
+        reason: Optional[str] = None,
+        cache_path: Optional[str] = None,
+        status: str = "PENDING",
+        error_msg: Optional[str] = None,
+    ) -> str:
+        """冪等建立或更新一筆 ReviewEntry；SQLite 是審核狀態唯一權威來源。"""
+        if not review_entry_id or not job_id or not group_id or not category:
+            raise ValueError("ReviewEntry 的識別欄位不得為空")
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO review_entries (
+                    review_entry_id, job_id, group_id, category, score, reason,
+                    shortcut_path, target_path, cache_path, status, error_msg,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(review_entry_id) DO UPDATE SET
+                    score = excluded.score,
+                    reason = excluded.reason,
+                    shortcut_path = excluded.shortcut_path,
+                    target_path = excluded.target_path,
+                    cache_path = excluded.cache_path,
+                    status = excluded.status,
+                    error_msg = excluded.error_msg,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    review_entry_id, job_id, group_id, category, score, reason,
+                    shortcut_path, target_path, cache_path, status, error_msg,
+                    now, now,
+                ),
+            )
+        return review_entry_id
+
+    def get_review_entry(self, review_entry_id: str) -> Optional[Dict[str, Any]]:
+        """依權威識別碼取得 ReviewEntry。"""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM review_entries WHERE review_entry_id = ?",
+                (review_entry_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_review_entries(
+        self,
+        job_id: str,
+        category: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """依 Job、分類與狀態列出 ReviewEntry。"""
+        clauses = ["job_id = ?"]
+        params: List[Any] = [job_id]
+        if category is not None:
+            clauses.append("category = ?")
+            params.append(category)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        sql = (
+            "SELECT * FROM review_entries WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY category, review_entry_id"
+        )
+        with self._get_conn() as conn:
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    def update_review_entry_status(
+        self,
+        review_entry_id: str,
+        status: str,
+        error_msg: Optional[str] = None,
+    ) -> None:
+        """更新 ReviewEntry 狀態與錯誤原因。"""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE review_entries
+                SET status = ?, error_msg = ?, updated_at = ?
+                WHERE review_entry_id = ?
+                """,
+                (status, error_msg, now, review_entry_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(f"找不到 ReviewEntry: {review_entry_id}")
