@@ -2234,9 +2234,9 @@ class WebBridge:
                 self._on_status("paused")
                 return
 
-            # 計算指紋並尋找可續傳的歷史 Job
+            # 計算指紋並尋找可續傳的歷史 Job (精準匹配 job_type)
             archive_fingerprints = [takeout_zip.TakeoutZipScanner.get_archive_fingerprint(zp) for zp in zip_files]
-            resumable_id = state_mgr.find_resumable_job(src, dst, archive_fingerprints)
+            resumable_id = state_mgr.find_resumable_job(src, dst, archive_fingerprints, job_type=job_type)
 
             if resumable_id:
                 job_id = resumable_id
@@ -2342,7 +2342,7 @@ class WebBridge:
                 if m['status'] in (import_state.TakeoutState.VERIFIED, import_state.TakeoutState.METADATA_PARSED, import_state.TakeoutState.DESTINATION_RESERVED):
                     if actual_part_path and os.path.isfile(actual_part_path):
                         if os.path.getsize(actual_part_path) == m['uncompressed_size']:
-                            if not m['sha256'] or state_mgr._compute_sha256(actual_part_path) == m['sha256']:
+                            if m['sha256'] and state_mgr._compute_sha256(actual_part_path) == m['sha256']:
                                 part_reused = True
                         if not part_reused:
                             try: os.remove(actual_part_path)

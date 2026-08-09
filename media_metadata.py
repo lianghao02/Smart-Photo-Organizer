@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v3.3 零依賴解耦與 DateParser 契合版)
-讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，與 DateParser 及 95分 Google JSON 完全契合。
+Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v3.3.2 時區與帶 OFFSET ISO 契合版)
+讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，帶時區轉換與 DateParser 95分 Google JSON 完全契合。
 """
 
 import os
@@ -49,20 +49,20 @@ class MediaMetadataExtractor:
         rename_mode: str = "date_seq"
     ) -> Dict[str, Any]:
         """
-        針對 .part 暫存檔解析 EXIF/ffprobe Metadata，整合 Sidecar JSON 呼叫 DateParser.get_date_details() 進行 95 分權重與衝突評估
-        回傳最佳日期候選、置信度與與 Processor 一致的年/月/Photos|Videos 目標資料夾路徑。
+        針對 .part 暫存檔解析 EXIF/ffprobe Metadata，整合 Sidecar JSON 呼叫 DateParser.get_date_details()
+        傳遞含時區偏移 (+00:00) 的 ISO 字串，確保在 DateParser 中自動透過 .astimezone() 精準轉換為台灣本機時間。
         """
         orig_ext = os.path.splitext(filename)[1].lower()
 
         is_photo = orig_ext in cls.EXT_PHOTOS
         sub_type_folder = "Photos" if is_photo else "Videos"
 
-        # 轉換 Sidecar JSON 格式時間為 ISO 字串供 DateParser 以 95 分權重納入候選評估
+        # 轉換 Sidecar JSON UTC 時間為帶時區偏移 (+00:00 / Z) 的 ISO 8601 字串，供 DateParser 自動轉為本機時間
         google_json_date = None
         if json_data and 'timestamp' in json_data:
             try:
                 dt = datetime.datetime.fromtimestamp(json_data['timestamp'], datetime.timezone.utc)
-                google_json_date = dt.strftime('%Y-%m-%d %H:%M:%S')
+                google_json_date = dt.isoformat()
             except Exception:
                 pass
 

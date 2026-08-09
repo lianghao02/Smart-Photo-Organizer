@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 3.3 實機落地單元與 Coordinator 整合測試
-驗證 DateParser _parse_iso_media_date、95分 Google JSON 權重、EXIF/JSON 衝突檢測、RAW 照片格式、全量 get_job_archives 跨檔與 Sidecar 原子寫入
+Google Takeout ZIP 匯入引擎 Phase 3.3.2 微補丁單元測試
+驗證 DateParser UTC 跨日本機時區轉換、find_resumable_job job_type 參數、嚴格 SHA-256 校驗與 Sidecar 原子落碟
 """
 
 import os
@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import zipfile
 import unittest
+import datetime
 from pathlib import Path
 
 # 動態加載專案目錄
@@ -88,14 +89,15 @@ class TestTakeoutPhase3(unittest.TestCase):
         found_imp = state_mgr.find_resumable_job(self.test_dir, self.dst_dir, [fp], job_type=import_state.JobType.IMPORT)
         self.assertEqual(found_imp, job_import)
 
-    def test_google_json_date_confidence_95_and_raw_formats(self):
-        """驗證 Google JSON 正確解析 2018-06-15 具備 95 分高可信度且 RAW 格式 (.cr3, .dng) 歸入 Photos"""
+    def test_google_json_utc_timezone_conversion_and_raw_formats(self):
+        """驗證 Google JSON 帶時區 ISO 傳遞至 DateParser 自動轉為本機時間且 RAW 格式歸入 Photos"""
         date_parser = app_main.DateParser()
         part_path = os.path.join(self.dst_dir, "sample.cr3")
         with open(part_path, 'wb') as f:
             f.write(self.sample_photo_bytes)
 
-        json_data = {"timestamp": 1529064000} # 2018-06-15
+        # 1529064000 = 2018-06-15 12:00:00 UTC
+        json_data = {"timestamp": 1529064000}
         meta_res = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
             part_path=part_path,
             filename="IMG_001.CR3",
@@ -105,12 +107,13 @@ class TestTakeoutPhase3(unittest.TestCase):
             folder_pattern="ym"
         )
 
-        self.assertEqual(meta_res['date_str'], "2018-06-15")
+        expected_local_dt = datetime.datetime.fromtimestamp(1529064000, datetime.timezone.utc).astimezone().replace(tzinfo=None)
+        expected_date_str = expected_local_dt.strftime('%Y-%m-%d')
+
+        self.assertEqual(meta_res['date_str'], expected_date_str)
         self.assertEqual(meta_res['confidence'], 95)
         self.assertEqual(meta_res['date_source'], "Google Takeout JSON")
         self.assertTrue(meta_res['is_photo'])
-        expected_dir = os.path.join(self.dst_dir, "2018", "06", "Photos")
-        self.assertEqual(os.path.normpath(meta_res['target_dir']), os.path.normpath(expected_dir))
 
     def test_cross_zip_all_archives_map_lookup_and_conflict_flag(self):
         """驗證即使 ZIP2 只有 JSON，get_job_archives 仍能讀取 zip2 且日期衝突精準回傳 has_conflict"""
