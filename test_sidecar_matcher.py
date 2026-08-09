@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Smart-Photo-Organizer v3.0 Phase 1 - SidecarMatcher 單元測試 (test_sidecar_matcher.py)
-驗證精準配對、裸 stem、Supplemental Metadata (含截斷)、Takeout 編號變體、大小寫相容、跨 ZIP 配對、JSON 獨佔指派、AMBIGUOUS 歧義性與 Processor 整合一致性。
+驗證精準配對、裸 stem、Supplemental Metadata (含截斷與同級歧義)、Takeout 編號變體、大小寫相容、跨 ZIP 配對、JSON 獨佔指派、AMBIGUOUS 歧義性與 Processor 任務層級整合一致性。
 """
 
 import os
@@ -48,6 +48,17 @@ class TestSidecarMatcher(unittest.TestCase):
         outcome = SidecarMatcher.match_sources([media, json_item])
         self.assertEqual(len(outcome.matched_pairs), 1)
         self.assertEqual(outcome.matched_pairs[0].match_quality, "EXACT_FULL_PATH_SUPPLEMENTAL")
+
+    def test_supplemental_metadata_ambiguity_when_multiple_variants_exist(self):
+        """驗證 P2: 同時存在多個同優先序 Supplemental 變體時正確標記 AMBIGUOUS"""
+        media = SourceItem("m1", "FOLDER", "Album/photo.jpg", "photo.jpg", ".jpg", 100, is_media=True, is_json=False)
+        json1 = SourceItem("j1", "FOLDER", "Album/photo.jpg.supplemental-metadata.json", "photo.jpg.supplemental-metadata.json", ".json", 50, is_media=False, is_json=True)
+        json2 = SourceItem("j2", "FOLDER", "Album/photo.jpg.supplemental-metada.json", "photo.jpg.supplemental-metada.json", ".json", 50, is_media=False, is_json=True)
+
+        outcome = SidecarMatcher.match_sources([media, json1, json2])
+        self.assertEqual(len(outcome.matched_pairs), 0)
+        self.assertEqual(len(outcome.ambiguous_media), 1)
+        self.assertEqual(len(outcome.ambiguous_json), 2)
 
     def test_numbered_variant_matching(self):
         """驗證 P4: photo(1).jpg ↔ photo.jpg(1).json Google Takeout 重複編號變體配對"""
@@ -200,6 +211,26 @@ class TestProcessorSidecarIntegration(unittest.TestCase):
         pair_srcs = [p[0] for p in pairs_multi]
         self.assertIn(json_full, pair_srcs)
         self.assertIn(json_stem, pair_srcs)
+
+    def test_processor_task_level_json_exclusivity(self):
+        """證明 Processor 透過任務層級 Sidecar 索引維護 JSON 獨佔性，避免 photo.jpg 與 photo.heic 搶奪同一 photo.json」"""
+        jpg_p = os.path.join(self.src_dir, "photo.jpg")
+        heic_p = os.path.join(self.src_dir, "photo.heic")
+        json_p = os.path.join(self.src_dir, "photo.json")
+
+        with open(jpg_p, 'wb') as f: f.write(b"jpg content")
+        with open(heic_p, 'wb') as f: f.write(b"heic content")
+        with open(json_p, 'wb') as f: f.write(b"json content")
+
+        dst_jpg = os.path.join(self.dst_dir, "2018/photo.jpg")
+        dst_heic = os.path.join(self.dst_dir, "2018/photo.heic")
+
+        pairs_jpg = self.processor._get_sidecar_pairs(jpg_p, dst_jpg)
+        pairs_heic = self.processor._get_sidecar_pairs(heic_p, dst_heic)
+
+        # 斷言全任務中 photo.json 只能被其中一個媒體取得，總指派次數嚴格為 1
+        total_assignments = len(pairs_jpg) + len(pairs_heic)
+        self.assertEqual(total_assignments, 1)
 
 
 if __name__ == '__main__':

@@ -58,81 +58,6 @@ class SidecarMatcher:
         return False
 
     @classmethod
-    def find_sidecars_for_media(cls, media: SourceItem, candidate_items: List[SourceItem]) -> List[SidecarMatch]:
-        """
-        為單一媒體在同目錄的候選 JSON 中尋找所有合法的 Sidecar (支援同媒體跟隨全檔名與裸 stem 複數 Sidecar)。
-        供 Processor._get_sidecar_pairs() 實際調用，共用同套配對規則與優先序。
-        """
-        matches: List[SidecarMatch] = []
-        if not media.is_media or not candidate_items:
-            return matches
-
-        log_p = media.logical_path.lower()
-        log_dir = os.path.dirname(log_p)
-        media_stem = os.path.splitext(log_p)[0]
-        fn_lower = media.filename.lower()
-        fn_stem = os.path.splitext(fn_lower)[0]
-
-        json_cands = [j for j in candidate_items if j.is_json and j.is_safe]
-        matched_json_keys: Set[str] = set()
-
-        # 1. 全檔名 P1
-        p1_key = log_p + ".json"
-        for j in json_cands:
-            if j.logical_path.lower() == p1_key or j.filename.lower() == (fn_lower + ".json"):
-                matched_json_keys.add(j.source_key)
-                matches.append(SidecarMatch(media, j, "EXACT_FULL_PATH", "全檔名精準配對"))
-
-        # 2. Supplemental Metadata P2
-        p2_suffixes = [".supplemental-metadata.json", ".supplemental-metada.json", ".supplemental-meta.json", ".supplemental.json"]
-        for j in json_cands:
-            if j.source_key in matched_json_keys:
-                continue
-            j_log = j.logical_path.lower()
-            if any(j_log == (log_p + suf) for suf in p2_suffixes) or any(j.filename.lower() == (fn_lower + suf) for suf in p2_suffixes):
-                matched_json_keys.add(j.source_key)
-                matches.append(SidecarMatch(media, j, "EXACT_FULL_PATH_SUPPLEMENTAL", "Supplemental Metadata 配對"))
-
-        # 3. 裸 stem P3 (需要檢查同目錄是否有相片檔保護 Live Photo 影片)
-        has_sibling_photo = False
-        if media.extension in EXT_VIDEOS:
-            for item in candidate_items:
-                if item != media and item.is_media and item.extension in EXT_PHOTOS:
-                    if os.path.splitext(item.logical_path.lower())[0] == media_stem:
-                        has_sibling_photo = True
-                        break
-
-        if not has_sibling_photo:
-            p3_key = media_stem + ".json"
-            for j in json_cands:
-                if j.source_key in matched_json_keys:
-                    continue
-                j_log = j.logical_path.lower()
-                stem_parsed, _ = cls._extract_json_stem(j_log)
-                if j_log == p3_key or j.filename.lower() == (fn_stem + ".json") or stem_parsed.lower() == media_stem:
-                    matched_json_keys.add(j.source_key)
-                    matches.append(SidecarMatch(media, j, "BASE_STEM", "裸 stem 配對"))
-
-        # 4. Takeout 重複編號變體 P4
-        m_num = re.search(r'^(.*?)(\(\d+\))$', fn_stem)
-        if m_num:
-            raw_base, num_part = m_num.group(1), m_num.group(2)
-            p4_cands = [
-                f"{raw_base}{media.extension}{num_part}.json",
-                f"{fn_stem}{media.extension}.json",
-                f"{fn_stem}.json"
-            ]
-            for j in json_cands:
-                if j.source_key in matched_json_keys:
-                    continue
-                j_fn = j.filename.lower()
-                if any(j_fn == cand.lower() for cand in p4_cands):
-                    matched_json_keys.add(j.source_key)
-                    matches.append(SidecarMatch(media, j, "NUMBERED_VARIANT", "Google Takeout 重複編號變體配對"))
-
-        return matches
-
-    @classmethod
     def match_sources(cls, items: List[SourceItem]) -> MatchOutcome:
         """
         對輸入的 SourceItem 列表進行全域階段式 (Phase-by-Phase) 優先序 Sidecar 配對。
@@ -142,7 +67,7 @@ class SidecarMatcher:
         3. 比較時不區分大小寫，但輸出保留原始物件名稱。
         4. 優先序階段：
            - Phase 1 (P1): 同封存檔/同目錄、全媒體檔名 + .json (photo.jpg ↔ photo.jpg.json)
-           - Phase 2 (P2): 同封存檔/同目錄、Supplemental Metadata 及其截斷變體
+           - Phase 2 (P2): 同封存檔/同目錄、Supplemental Metadata 及其截斷變體 (若同時存在多個相同優先序 Supplemental 變體，標記 AMBIGUOUS)
            - Phase 3 (P3): 同封存檔/同目錄、裸 stem + .json (photo.jpg ↔ photo.json)
            - Phase 4 (P4): 同封存檔/同目錄、Google Takeout 重複編號變體 (photo(1).jpg ↔ photo.jpg(1).json)
            - Phase 5 (P5): 跨 ZIP / 跨封存檔、相同邏輯路徑配對 (CROSS_ZIP_EXACT)
@@ -239,6 +164,7 @@ class SidecarMatcher:
 
         # -------------------------------------------------------------
         # Phase 2 (P2): 同封存檔/同目錄、Supplemental Metadata 及其截斷變體
+        # 彙整所有同優先序變體進行齊一歧義性檢查
         # -------------------------------------------------------------
         next_active = []
         for media in active_media:
@@ -249,29 +175,32 @@ class SidecarMatcher:
                 log_p + ".supplemental-meta.json",
                 log_p + ".supplemental.json",
             ]
-            matched_flag = False
+            all_p2_valid: List[SourceItem] = []
             for p2_key in p2_candidates:
                 if p2_key in json_by_logical_path:
                     cands = [c for c in json_by_logical_path[p2_key] if cls.is_same_archive(media, c)]
-                    valid_cands = get_unassigned(cands)
-                    if len(valid_cands) == 1:
-                        assigned_json_keys.add(valid_cands[0].source_key)
-                        outcome.matched_pairs.append(SidecarMatch(
-                            media_item=media,
-                            json_item=valid_cands[0],
-                            match_quality="EXACT_FULL_PATH_SUPPLEMENTAL",
-                            reason="同封存檔 Supplemental Metadata 配對"
-                        ))
-                        matched_flag = True
-                        break
-                    elif len(valid_cands) > 1:
-                        outcome.ambiguous_media.append(media)
-                        for c in valid_cands:
-                            ambiguous_json_keys.add(c.source_key)
-                        matched_flag = True
-                        break
-            if not matched_flag:
-                next_active.append(media)
+                    all_p2_valid.extend(get_unassigned(cands))
+
+            # 按 source_key 去重
+            unique_p2 = {c.source_key: c for c in all_p2_valid}
+            valid_cands = list(unique_p2.values())
+
+            if len(valid_cands) == 1:
+                assigned_json_keys.add(valid_cands[0].source_key)
+                outcome.matched_pairs.append(SidecarMatch(
+                    media_item=media,
+                    json_item=valid_cands[0],
+                    match_quality="EXACT_FULL_PATH_SUPPLEMENTAL",
+                    reason="同封存檔 Supplemental Metadata 配對"
+                ))
+                continue
+            elif len(valid_cands) > 1:
+                outcome.ambiguous_media.append(media)
+                for c in valid_cands:
+                    ambiguous_json_keys.add(c.source_key)
+                continue
+
+            next_active.append(media)
         active_media = next_active
 
         # -------------------------------------------------------------
@@ -321,7 +250,6 @@ class SidecarMatcher:
             fn_stem = os.path.splitext(media.filename.lower())[0]
             m_num = re.search(r'^(.*?)(\(\d+\))$', fn_stem)
 
-            matched_flag = False
             if m_num:
                 raw_base, num_part = m_num.group(1), m_num.group(2)
                 p4_candidates = [
@@ -329,28 +257,31 @@ class SidecarMatcher:
                     os.path.join(log_dir, f"{fn_stem}{media.extension}.json").replace('\\', '/').strip('/'),
                     os.path.join(log_dir, f"{fn_stem}.json").replace('\\', '/').strip('/'),
                 ]
+                all_p4_valid: List[SourceItem] = []
                 for p4_key in p4_candidates:
                     if p4_key in json_by_logical_path:
                         cands = [c for c in json_by_logical_path[p4_key] if cls.is_same_archive(media, c)]
-                        valid_cands = get_unassigned(cands)
-                        if len(valid_cands) == 1:
-                            assigned_json_keys.add(valid_cands[0].source_key)
-                            outcome.matched_pairs.append(SidecarMatch(
-                                media_item=media,
-                                json_item=valid_cands[0],
-                                match_quality="NUMBERED_VARIANT",
-                                reason="Google Takeout 重複編號變體配對"
-                            ))
-                            matched_flag = True
-                            break
-                        elif len(valid_cands) > 1:
-                            outcome.ambiguous_media.append(media)
-                            for c in valid_cands:
-                                ambiguous_json_keys.add(c.source_key)
-                            matched_flag = True
-                            break
-            if not matched_flag:
-                next_active.append(media)
+                        all_p4_valid.extend(get_unassigned(cands))
+
+                unique_p4 = {c.source_key: c for c in all_p4_valid}
+                valid_cands = list(unique_p4.values())
+
+                if len(valid_cands) == 1:
+                    assigned_json_keys.add(valid_cands[0].source_key)
+                    outcome.matched_pairs.append(SidecarMatch(
+                        media_item=media,
+                        json_item=valid_cands[0],
+                        match_quality="NUMBERED_VARIANT",
+                        reason="Google Takeout 重複編號變體配對"
+                    ))
+                    continue
+                elif len(valid_cands) > 1:
+                    outcome.ambiguous_media.append(media)
+                    for c in valid_cands:
+                        ambiguous_json_keys.add(c.source_key)
+                    continue
+
+            next_active.append(media)
         active_media = next_active
 
         # -------------------------------------------------------------
@@ -392,28 +323,30 @@ class SidecarMatcher:
                 (fn_lower + ".supplemental-metadata.json"),
                 (fn_stem + ".json")
             ]
-            matched_flag = False
+            all_p6_valid: List[SourceItem] = []
             for p6_key in p6_fn_keys:
                 if p6_key in json_by_filename:
-                    valid_cands = get_unassigned(json_by_filename[p6_key])
-                    if len(valid_cands) == 1:
-                        assigned_json_keys.add(valid_cands[0].source_key)
-                        outcome.matched_pairs.append(SidecarMatch(
-                            media_item=media,
-                            json_item=valid_cands[0],
-                            match_quality="FILENAME_MATCH",
-                            reason="跨目錄單一檔名備用配對"
-                        ))
-                        matched_flag = True
-                        break
-                    elif len(valid_cands) > 1:
-                        outcome.ambiguous_media.append(media)
-                        for c in valid_cands:
-                            ambiguous_json_keys.add(c.source_key)
-                        matched_flag = True
-                        break
-            if not matched_flag:
-                next_active.append(media)
+                    all_p6_valid.extend(get_unassigned(json_by_filename[p6_key]))
+
+            unique_p6 = {c.source_key: c for c in all_p6_valid}
+            valid_cands = list(unique_p6.values())
+
+            if len(valid_cands) == 1:
+                assigned_json_keys.add(valid_cands[0].source_key)
+                outcome.matched_pairs.append(SidecarMatch(
+                    media_item=media,
+                    json_item=valid_cands[0],
+                    match_quality="FILENAME_MATCH",
+                    reason="跨目錄單一檔名備用配對"
+                ))
+                continue
+            elif len(valid_cands) > 1:
+                outcome.ambiguous_media.append(media)
+                for c in valid_cands:
+                    ambiguous_json_keys.add(c.source_key)
+                continue
+
+            next_active.append(media)
 
         # 整理未配對媒體與 JSON
         outcome.unmatched_media = list(next_active)
