@@ -13,12 +13,12 @@
 
 ## 本次需求
 
-- [ ] 在 `WebBridge.__init__()` 建立 `threading.Event()`。
-- [ ] 建立單一媒體副檔名來源，供一般掃描、Takeout ZIP 與 Metadata 判斷共用。
-- [ ] 確認 CR3／DNG／RW2／ORF／PEF／SR2 可被 ZIP 掃描、配對與歸檔。
-- [ ] 修正 Phase 5 中斷續傳測試，同步設定合理的 Job 與 Member 未完成狀態，或改成真實跨程序中斷測試。
-- [ ] 保留並完成目前未追蹤的 `test_takeout_phase5.py`，未經使用者指示不得刪除或覆寫其無關內容。
-- [ ] 更新測試報告用語，不把 100 筆 SQLite 測試描述成數百 GB 壓力測試。
+- [x] 在 `WebBridge.__init__()` 建立 `threading.Event()`。
+- [x] 建立單一媒體副檔名來源，供一般掃描、Takeout ZIP 與 Metadata 判斷共用。
+- [x] 確認 CR3／DNG／RW2／ORF／PEF／SR2 可被 ZIP 掃描、配對與歸檔。
+- [x] 修正 Phase 5 中斷續傳測試，同步設定合理的 Job 與 Member 未完成狀態，或改成真實跨程序中斷測試。
+- [x] 保留並完成目前未追蹤的 `test_takeout_phase5.py`，未經使用者指示不得刪除或覆寫其無關內容。
+- [x] 更新測試報告用語，不把 100 筆 SQLite 測試描述成數百 GB 壓力測試。
 
 ## 不在本次範圍
 
@@ -31,11 +31,11 @@
 
 ## 驗收條件
 
-- [ ] `python -c "import main; print('Load OK')"` 成功。
-- [ ] 既有 34 項測試全部通過。
-- [ ] `test_takeout_phase5.py` 的 5 項測試全部通過，總測試至少 39 項。
-- [ ] 實際執行 Takeout 流程不再出現 `_stop_event` 缺失。
-- [ ] CR3 跨 ZIP Sidecar 案例能產生主媒體與配對 JSON。
-- [ ] 續傳測試確實重用同一個未完成 Job，而非另建新 Job 假通過。
-- [ ] Git 差異只包含 Phase 0 必要修改與本次文件整理。
+- [x] `python -c "import main; print('Load OK')"` 成功。
+- [x] 既有 34 項測試全部通過。
+- [x] `test_takeout_phase5.py` 的 7 項測試全部通過，總測試至少 41 項。
+- [x] 實際執行 Takeout 流程不再出現 `_stop_event` 缺失。
+- [x] CR3 跨 ZIP Sidecar 案例能產生主媒體與配對 JSON。
+- [x] 續傳測試確實重用同一個未完成 Job，而非另建新 Job 假通過。
+- [x] Git 差異只包含 Phase 0 必要修改與本次文件整理。
 

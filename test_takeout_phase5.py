@@ -240,11 +240,20 @@ class TestTakeoutPhase5(unittest.TestCase):
         web_bridge = app_main.WebBridge()
         web_bridge._run_takeout_audit(self.src_dir, self.dst_dir, is_dry_run=False)
 
-        # 驗證媒體檔 broken_photo.jpg 成功歸檔，不被格式錯誤的 Sidecar 阻擋崩潰
-        photo_dir = os.path.join(self.dst_dir, "2018", "06", "Photos")
-        self.assertTrue(os.path.exists(photo_dir))
-        files = os.listdir(photo_dir)
-        self.assertTrue(any("broken_photo" in f for f in files))
+        # 經由 SQLite 查詢 broken_photo.jpg 驗證 COMPLETED 且實體檔與 Sidecar 檔均存在
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "takeout_import.db")
+        state_mgr = import_state.TakeoutStateManager(db_path)
+        with state_mgr._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT status, final_destination FROM members WHERE filename = 'broken_photo.jpg'")
+            m_row = cursor.fetchone()
+            self.assertIsNotNone(m_row)
+            self.assertEqual(m_row['status'], import_state.TakeoutState.COMPLETED)
+
+            dest_path = m_row['final_destination']
+            self.assertIsNotNone(dest_path)
+            self.assertTrue(os.path.exists(dest_path))
+            self.assertTrue(os.path.exists(dest_path + ".json"))
 
 
 if __name__ == '__main__':
