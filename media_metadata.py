@@ -1,13 +1,39 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v4.0 Phase 4 異常隔離版)
-讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，計算 _Review/DateConflict、_Review/LowConfidenceDate 與 _Excluded/Screenshots 隔離路徑。
+Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期/異常隔離決策模組 (v4.1 7分截圖引擎與 Sidecar 原子寫入版)
+提供符合 ACID 的 Sidecar JSON 原子落碟 (write_sidecar_atomic) 與 7 分截圖識別過濾 (calculate_screenshot_score)。
 """
 
 import os
 import json
 import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List
+
+
+def write_sidecar_atomic(sidecar_bytes: bytes, target_json_path: str) -> Tuple[bool, Optional[str]]:
+    """
+    Sidecar JSON 原子落碟寫入 helper:
+    1. 寫入 <target_json_path>.part
+    2. flush() 並呼叫 os.fsync() 強制落碟
+    3. 執行 os.rename() / 'xb' 原子排他更名
+    4. 發生 FileExistsError 或 OSError 時刪除 .part 檔並回傳 (False, error_msg)
+    """
+    if not sidecar_bytes or not target_json_path:
+        return False, "Sidecar 位元組或目標路徑為空"
+
+    json_part = target_json_path + ".part"
+    try:
+        with open(json_part, 'xb') as jf:
+            jf.write(sidecar_bytes)
+            jf.flush()
+            os.fsync(jf.fileno())
+        os.rename(json_part, target_json_path)
+        return True, None
+    except (FileExistsError, OSError) as e:
+        if os.path.exists(json_part):
+            try: os.remove(json_part)
+            except OSError: pass
+        return False, str(e)
 
 
 class MediaMetadataExtractor:
@@ -16,6 +42,9 @@ class MediaMetadataExtractor:
         '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.raw', '.arw', '.cr2', '.nef',
         '.cr3', '.dng', '.orf', '.rw2', '.pef', '.sr2'
     }
+
+    # 低可信度日期門檻 (預設 50 分，低於 50 進入 _Review/LowConfidenceDate)
+    DATE_LOW_CONFIDENCE_THRESHOLD = 50
 
     @staticmethod
     def parse_sidecar_json_bytes(json_bytes: bytes) -> Optional[dict]:
@@ -38,11 +67,62 @@ class MediaMetadataExtractor:
         return None
 
     @classmethod
-    def is_screenshot_filename(cls, filename: str) -> bool:
-        """檔名特徵捷徑判斷是否為截圖"""
-        fn_lower = filename.lower()
-        patterns = ('screenshot', 'screen_shot', '螢幕快照', '螢幕截圖', '截圖', 'line_album_')
-        return any(p in fn_lower for p in patterns)
+    def calculate_screenshot_score(cls, part_path: str, original_filename: str) -> Tuple[int, List[str]]:
+        """
+        7 分制截圖／監視器畫面評分引擎
+        使用原始檔名、副檔名、.part 實體圖片尺寸與相機 EXIF 特徵綜合評估。
+        """
+        fn_lower = original_filename.lower()
+        ext = os.path.splitext(fn_lower)[1]
+        score = 0
+        reasons: List[str] = []
+
+        # 1. 檔名關鍵字評分 (注：LINE 相簿 line_album_ 不得記 7 分截圖關鍵字)
+        if any(kw in fn_lower for kw in ('screenshot', 'screen_shot', '螢幕快照', '螢幕截圖', '截圖')):
+            score += 7
+            reasons.append("截圖檔名(+7)")
+        if any(kw in fn_lower for kw in ('surveillance', 'cctv', '監視器')):
+            score += 7
+            reasons.append("監視器檔名(+7)")
+
+        if ext in ('.png', '.webp'):
+            score += 1
+            reasons.append("常見截圖格式(+1)")
+
+        # 2. .part 實體圖片尺寸與相機 EXIF 評分
+        width = height = 0
+        has_camera_exif = False
+        metadata_checked = False
+
+        if os.path.exists(part_path):
+            try:
+                from PIL import Image
+                with Image.open(part_path) as img:
+                    width, height = img.size
+                    metadata_checked = True
+                    exif = img.getexif() if hasattr(img, 'getexif') else None
+                    camera_tags = {271, 272, 33434, 33437, 34855, 36867, 37377, 37378}
+                    has_camera_exif = any(tag in exif for tag in camera_tags) if exif else False
+            except Exception:
+                pass
+
+        if metadata_checked:
+            if has_camera_exif:
+                score -= 5
+                reasons.append("具有相機 EXIF(-5)")
+            else:
+                score += 2
+                reasons.append("缺少相機 EXIF(+2)")
+
+        if width > 0 and height > 0:
+            if height > width and (height / float(width)) >= 1.6 and width <= 1440:
+                score += 3
+                reasons.append("手機直向螢幕比例(+3)")
+            elif width > height and (width / float(height)) >= 1.6 and height <= 1440:
+                score += 3
+                reasons.append("手機橫向螢幕比例(+3)")
+
+        return max(0, score), reasons
 
     @classmethod
     def resolve_media_date_and_destination(
@@ -58,14 +138,15 @@ class MediaMetadataExtractor:
     ) -> Dict[str, Any]:
         """
         針對 .part 暫存檔解析 EXIF/ffprobe Metadata，整合 Sidecar JSON 呼叫 DateParser 進行日期決策
-        並依據 DateConflict、LowConfidenceDate 與 Screenshots 進行階層式異常隔離。
+        並依據 7 分截圖、DateConflict 與 LowConfidenceDate 進行階層式異常隔離。
         """
         orig_ext = os.path.splitext(filename)[1].lower()
         is_photo = orig_ext in cls.EXT_PHOTOS
         sub_type_folder = "Photos" if is_photo else "Videos"
 
-        # 1. 檔名截圖識別
-        is_screenshot = smart_screenshot and cls.is_screenshot_filename(filename)
+        # 1. 執行 7 分制截圖識別過濾
+        score, reasons = cls.calculate_screenshot_score(part_path, filename)
+        is_screenshot = smart_screenshot and (score >= 7)
 
         # 2. 轉換 Sidecar JSON UTC 時間為帶時區偏移 (+00:00 / Z) 的 ISO 8601 字串
         google_json_date = None
@@ -98,15 +179,12 @@ class MediaMetadataExtractor:
             year_str = "No_Date"
             month_str = "No_Date"
 
-        # 4. Phase 4 階層式異常隔離路徑計算
+        # 4. Phase 4 階層式異常隔離路徑計算 (Screenshots ➔ DateConflict ➔ LowConfidenceDate ➔ Standard)
         if is_screenshot:
-            # 截圖隔離
             target_subfolder = os.path.join(dst_root, "_Excluded", "Screenshots")
         elif has_conflict:
-            # EXIF 與 Sidecar JSON 日期衝突隔離
             target_subfolder = os.path.join(dst_root, "_Review", "DateConflict", year_str, sub_type_folder)
-        elif confidence < 60:
-            # 低可信度日期隔離
+        elif confidence < cls.DATE_LOW_CONFIDENCE_THRESHOLD:
             target_subfolder = os.path.join(dst_root, "_Review", "LowConfidenceDate", year_str, sub_type_folder)
         elif year_str == "No_Date":
             target_subfolder = os.path.join(dst_root, "No_Date", sub_type_folder)
@@ -123,5 +201,7 @@ class MediaMetadataExtractor:
             "parsed_dt": parsed_dt,
             "is_photo": is_photo,
             "has_conflict": has_conflict,
-            "is_screenshot": is_screenshot
+            "is_screenshot": is_screenshot,
+            "screenshot_score": score,
+            "screenshot_reasons": reasons
         }

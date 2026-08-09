@@ -2489,23 +2489,27 @@ class WebBridge:
                     if not rename_success:
                         raise OSError(f"os.rename 重試失敗: {final_dest}")
 
-                    # 8. Sidecar JSON 原子落碟寫入 (.json.part -> flush -> fsync -> rename .json)
+                    # 8. Sidecar JSON 原子落碟寫入 (使用 write_sidecar_atomic Helper)
+                    sidecar_error_msg = None
                     if sidecar_json_bytes and getattr(self._app_config, 'sidecar_enabled', True):
-                        json_part = final_dest + ".json.part"
                         json_final = final_dest + ".json"
-                        try:
-                            with open(json_part, 'xb') as jf:
-                                jf.write(sidecar_json_bytes)
-                                jf.flush()
-                                os.fsync(jf.fileno())
-                            os.rename(json_part, json_final)
-                        except (FileExistsError, OSError):
-                            if os.path.exists(json_part):
-                                try: os.remove(json_part)
-                                except OSError: pass
+                        ok, err_msg = media_metadata.write_sidecar_atomic(sidecar_json_bytes, json_final)
+                        if not ok:
+                            sidecar_error_msg = f"Sidecar 寫入失敗: {err_msg}"
+                            self._on_log(f"⚠️ {sidecar_error_msg} [{m['filename']}]", "warning")
 
                     # 9. 提交 COMPLETED ➔ .part 已移走，單檔完整流水線結束！
-                    state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED, final_destination=final_dest)
+                    if sidecar_error_msg:
+                        pipeline_errors += 1
+                        state_mgr.update_member_status(
+                            mid,
+                            import_state.TakeoutState.COMPLETED_WITH_ERRORS,
+                            final_destination=final_dest,
+                            error_msg=sidecar_error_msg
+                        )
+                    else:
+                        state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED, final_destination=final_dest)
+                    
                     archived_count += 1
 
                     if idx % 50 == 0 or idx == len(pending_members):
