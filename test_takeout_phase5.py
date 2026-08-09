@@ -230,7 +230,10 @@ class TestTakeoutPhase5(unittest.TestCase):
         """Phase 5 Step 7: 獨立驗證格式錯誤 (無效 JSON 語法) 之 Sidecar 處理：不崩潰進程，媒體正常處理完成」"""
         broken_sidecar_zip = os.path.join(self.src_dir, "Takeout-BrokenSidecar.zip")
         with zipfile.ZipFile(broken_sidecar_zip, 'w') as zf_broken:
-            zf_broken.writestr("Takeout/Google Photos/Album2018/broken_photo.jpg", self.sample_photo_bytes)
+            zf_broken.writestr(
+                "Takeout/Google Photos/Album2018/broken_photo.jpg",
+                b"unique broken-sidecar media content"
+            )
             zf_broken.writestr("Takeout/Google Photos/Album2018/broken_photo.jpg.json", b"{invalid json syntax content...")
 
         # 驗證 parse_sidecar_json_bytes 解析無效語法位元組時，安全回傳 None 絕不拋出例外
