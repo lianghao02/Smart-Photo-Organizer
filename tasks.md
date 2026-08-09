@@ -1,48 +1,31 @@
-# Current Task：v3.0 Phase 5 — `99_待刪除` 至 Quarantine
+# Current Task：v3.0 Phase 6 — 短影片與 Live Photo 排除
 
 ## 前置基線
 
-- Phase 4 簽收 Commit：`ba7979b`
-- Phase 4 簽收測試：全專案 90 項中 89 通過、1 項因 Windows Symlink 權限明確略過
+- Phase 5 簽收 Commit：`b6cf133`
+- Phase 5 簽收測試：全專案 99 項中 98 通過、1 項因 Windows Symlink 權限明確略過
 
 ## 目標
 
-只接受 `_Review/99_待刪除` 中已登記且驗證成功的捷徑，依 `group_id` 去重後將完整 MediaGroup 移至 `_Quarantine/待刪除`。系統不提供永久刪除。
+以唯讀 ffprobe 取得影片長度，將大於 0 且小於或等於 5 秒的獨立影片登記至 `_Review/05_短影片`；任何 `LIVE_PHOTO_VIDEO` 必須在探測長度前排除。
 
-## 交易與安全契約
+## 必要功能
 
-1. 預設 `DRY_RUN=True`，只列出群組、成員、容量與目的資料夾，不寫入交易或搬移檔案。
-2. 捷徑必須同時通過：
-   - 位於 `99_待刪除`。
-   - 檔名含有效 ReviewEntry ID。
-   - SQLite 有權威紀錄。
-   - 解析目標與 SQLite 一致且位於允許根目錄。
-3. 同一 MediaGroup 即使有多個分類捷徑，單次只能隔離一次。
-4. 完整 MediaGroup 的媒體、Google JSON、Live Photo／RAW 配對檔缺一不可；缺少任一成員時整組停止。
-5. 採兩階段跨磁碟安全搬移：
-   - 第一階段：所有成員複製至 `.part`、flush／fsync、SHA-256 與容量驗證、零覆寫更名。
-   - 第二階段：全部目的檔驗證成功後，才逐檔核對來源 SHA-256 並移除來源。
-6. 中途失敗可依 SQLite `quarantine_actions`／`quarantine_items` 續傳；已驗證目的檔不得重複產生。
-7. 磁碟空間不足、目的衝突、來源變更、Symlink／Reparse Point 或範圍外路徑一律停止，不移除來源。
-8. Takeout ZIP 永遠唯讀；只移動 `_ReviewCache` 實體化群組，原始 ZIP 不修改、不改名、不刪除。
-9. 完成後 MediaGroup 與所有 ReviewEntry 標記 `QUARANTINED`，清除已處理的 `99` 捷徑。
-
-## 不在本階段
-
-- 永久刪除 Quarantine。
-- 短影片、相似照片、日期異常與最終日期歸檔。
-- UI 最終整理。
+1. ffprobe 採參數陣列呼叫、不使用 Shell、不修改或重新編碼影片。
+2. 容器 `format.duration` 優先；缺少時採有效串流中最長 duration。
+3. `0 < duration <= 5.0` 才建立 ReviewEntry；5.001 秒不得列入。
+4. `MediaAnalysisTarget` 必須保留 MediaGroup 是否含 `LIVE_PHOTO_VIDEO` 的權威角色資訊。
+5. Live Photo 影片在呼叫 ffprobe 前直接排除，不以檔名或長度猜測。
+6. ffprobe 不存在、逾時、回傳錯誤或沒有 duration 時只記錄警告，不把未知長度當成短影片。
+7. 命中後只建立 ReviewEntry／捷徑，來源影片保持原狀。
 
 ## 驗收結果
 
-- [x] 新增 `quarantine_manager.py` 與 SQLite 兩階段交易資料表／API。
-- [x] DRY_RUN 不落地、不搬移測試通過。
-- [x] 媒體＋JSON 整組驗證後搬移、時間戳保留與狀態更新測試通過。
-- [x] 多捷徑 group_id 去重、缺少成員整組停止測試通過。
-- [x] 目的衝突與空間不足零覆寫、來源保留測試通過。
-- [x] 部分來源已移除後中斷續傳測試通過。
-- [x] 未登記捷徑拒絕測試通過。
-- [x] Takeout ZIP 唯讀、只移動 ReviewCache 測試通過。
-- [x] Phase 5 新增測試 9/9 通過。
-- [x] 全專案 99 項測試中 98 通過、1 項因 Windows Symlink 權限明確略過；語法載入與 `git diff --check` 通過。
-- [x] Codex 自我複查完成，待建立 Phase 5 簽收 Commit。
+- [x] 新增 `VideoDurationProbe`，支援容器與串流 duration。
+- [x] 5.0 秒列入、5.001 秒排除測試通過。
+- [x] `LIVE_PHOTO_VIDEO` 在 probe 前排除測試通過。
+- [x] ffprobe 失敗降級警告測試通過。
+- [x] 來源影片不搬移、不刪除測試通過。
+- [x] Phase 6 新增測試 5/5 通過。
+- [x] 全專案 104 項測試中 103 通過、1 項因 Windows 權限明確略過，語法載入與 `git diff --check` 通過。
+- [x] Codex 自我複查完成，待提交 Phase 6 簽收 Commit。

@@ -10,6 +10,7 @@
 - 建立 `_Review`／`_ReviewCache` 工作區、SQLite ReviewEntry 與 Windows 捷徑安全驗證骨架。
 - 新增 MediaGroup 層級完全重複、Laplacian 模糊與 7 分制截圖人工審核分類器。
 - 新增 `99_待刪除` 至 `_Quarantine/待刪除` 的 MediaGroup 兩階段驗證搬移與中斷續傳。
+- 新增 5 秒內短影片人工審核分類，並在執行 ffprobe 前排除 Live Photo 配對影片。
 
 ### 修正
 

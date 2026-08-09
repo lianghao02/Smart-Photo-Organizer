@@ -11,7 +11,12 @@ from PIL import Image
 
 from import_state import TakeoutStateManager
 from media_group import GroupMember, GroupRole, MediaGroup
-from review_classifier import ExactDuplicateDetector, MediaAnalysisTarget, ReviewClassifier
+from review_classifier import (
+    ExactDuplicateDetector,
+    MediaAnalysisTarget,
+    ReviewClassifier,
+    VideoDurationProbe,
+)
 from review_workspace import ReviewWorkspaceManager
 from source_index import SourceItem
 
@@ -41,6 +46,17 @@ class UnavailableBlurDetector:
     @staticmethod
     def analyze(path: str, threshold: float):
         return None, 0.0, "未安裝 OpenCV／NumPy，已略過模糊分析"
+
+
+class FakeDurationProbe:
+    def __init__(self, duration, warning=None):
+        self.duration = duration
+        self.warning = warning
+        self.call_count = 0
+
+    def probe(self, path: str):
+        self.call_count += 1
+        return self.duration, self.warning
 
 
 class TestReviewClassifier(unittest.TestCase):
@@ -322,6 +338,104 @@ class TestReviewClassifier(unittest.TestCase):
                 group,
                 resolved_paths={"p": cached_photo},
             )
+
+    def test_five_second_video_creates_short_video_review(self):
+        """影片長度等於 5 秒仍應列入 05_短影片，來源檔保持不變。"""
+        video = os.path.join(self.source_root, "clip.mp4")
+        with open(video, "wb") as handle:
+            handle.write(b"video")
+        self._register_group("mg_short", [video])
+        probe = FakeDurationProbe(5.0)
+        classifier = ReviewClassifier(
+            self.workspace,
+            duration_probe=probe,
+            screenshot_enabled=False,
+            blur_enabled=False,
+        )
+        result = classifier.classify(
+            self.job_id,
+            [MediaAnalysisTarget("mg_short", video, original_filename="clip.mp4")],
+        )
+        self.assertEqual(len(result.entries), 1)
+        self.assertEqual(result.entries[0].category, "SHORT_VIDEO")
+        self.assertEqual(result.entries[0].score, 5.0)
+        self.assertTrue(os.path.isfile(video))
+
+    def test_video_longer_than_five_seconds_is_not_reviewed(self):
+        """5.001 秒不符合小於或等於 5 秒規則。"""
+        video = os.path.join(self.source_root, "long.mp4")
+        with open(video, "wb") as handle:
+            handle.write(b"video")
+        self._register_group("mg_long", [video])
+        classifier = ReviewClassifier(
+            self.workspace,
+            duration_probe=FakeDurationProbe(5.001),
+            screenshot_enabled=False,
+            blur_enabled=False,
+        )
+        result = classifier.classify(
+            self.job_id,
+            [MediaAnalysisTarget("mg_long", video)],
+        )
+        self.assertEqual(result.entries, [])
+
+    def test_live_photo_video_is_excluded_before_duration_probe(self):
+        """LIVE_PHOTO_VIDEO 即使小於 5 秒，也不得呼叫 duration 分類或建立捷徑。"""
+        video = os.path.join(self.source_root, "live.mov")
+        with open(video, "wb") as handle:
+            handle.write(b"video")
+        self._register_group("mg_live_video", [video])
+        probe = FakeDurationProbe(1.0)
+        classifier = ReviewClassifier(
+            self.workspace,
+            duration_probe=probe,
+            screenshot_enabled=False,
+            blur_enabled=False,
+        )
+        result = classifier.classify(self.job_id, [MediaAnalysisTarget(
+            "mg_live_video",
+            video,
+            contains_live_photo_video=True,
+        )])
+        self.assertEqual(result.entries, [])
+        self.assertEqual(probe.call_count, 0)
+
+    def test_duration_probe_parsing_prefers_container_then_longest_stream(self):
+        """容器 duration 優先；容器缺少時採有效串流的最長秒數。"""
+        self.assertEqual(
+            VideoDurationProbe.parse_duration({
+                "format": {"duration": "4.5"},
+                "streams": [{"duration": "9.0"}],
+            }),
+            4.5,
+        )
+        self.assertEqual(
+            VideoDurationProbe.parse_duration({
+                "format": {},
+                "streams": [{"duration": "2.0"}, {"duration": "3.5"}],
+            }),
+            3.5,
+        )
+        self.assertIsNone(VideoDurationProbe.parse_duration({"format": {}}))
+
+    def test_duration_probe_failure_is_warning_not_short_video(self):
+        """ffprobe 失敗只記錄警告，不得把未知長度影片當成短影片。"""
+        video = os.path.join(self.source_root, "unknown.mp4")
+        with open(video, "wb") as handle:
+            handle.write(b"video")
+        self._register_group("mg_unknown", [video])
+        classifier = ReviewClassifier(
+            self.workspace,
+            duration_probe=FakeDurationProbe(None, "找不到 ffprobe"),
+            screenshot_enabled=False,
+            blur_enabled=False,
+        )
+        result = classifier.classify(
+            self.job_id,
+            [MediaAnalysisTarget("mg_unknown", video)],
+        )
+        self.assertEqual(result.entries, [])
+        self.assertEqual(len(result.warnings), 1)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,9 @@ Smart-Photo-Organizer v3.0 Phase 4 - 人工審核分類器。
 """
 
 import hashlib
+import json
 import os
+import subprocess
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -20,6 +22,8 @@ HASH_BLOCK_SIZE = 4 * 1024
 FULL_HASH_READ_SIZE = 1024 * 1024
 SCREENSHOT_SCORE_THRESHOLD = 7
 DEFAULT_BLUR_THRESHOLD = 100.0
+SHORT_VIDEO_MAX_SECONDS = 5.0
+FFPROBE_TIMEOUT_SECONDS = 15
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,7 @@ class MediaAnalysisTarget:
     media_paths: Tuple[str, ...] = ()
     cache_path: Optional[str] = None
     original_filename: Optional[str] = None
+    contains_live_photo_video: bool = False
 
     @classmethod
     def from_media_group(
@@ -76,6 +81,10 @@ class MediaAnalysisTarget:
             media_paths=tuple(media_paths),
             cache_path=cache_path,
             original_filename=group.primary_media.filename,
+            contains_live_photo_video=any(
+                member.role == GroupRole.LIVE_PHOTO_VIDEO
+                for member in group.members
+            ),
         )
 
     def all_media_paths(self) -> Tuple[str, ...]:
@@ -270,6 +279,76 @@ class OpenCVBlurDetector:
             return None, 0.0, f"模糊分析失敗: {exc}"
 
 
+class VideoDurationProbe:
+    """以唯讀 ffprobe 取得影片長度，不重新編碼或修改媒體。"""
+
+    def __init__(
+        self,
+        ffprobe_path: Optional[str] = None,
+        timeout_seconds: int = FFPROBE_TIMEOUT_SECONDS,
+    ):
+        self.ffprobe_path = ffprobe_path or os.getenv("FFPROBE_PATH", "ffprobe")
+        self.timeout_seconds = max(1, int(timeout_seconds))
+
+    @staticmethod
+    def parse_duration(metadata: Dict[str, object]) -> Optional[float]:
+        """優先採容器 duration，缺少時取串流中最長的有效 duration。"""
+        format_data = metadata.get("format", {})
+        if isinstance(format_data, dict):
+            try:
+                duration = float(format_data.get("duration", 0))
+                if duration > 0:
+                    return duration
+            except (TypeError, ValueError):
+                pass
+        candidates: List[float] = []
+        streams = metadata.get("streams", [])
+        if isinstance(streams, list):
+            for stream in streams:
+                if not isinstance(stream, dict):
+                    continue
+                try:
+                    duration = float(stream.get("duration", 0))
+                    if duration > 0:
+                        candidates.append(duration)
+                except (TypeError, ValueError):
+                    continue
+        return max(candidates) if candidates else None
+
+    def probe(self, path: str) -> Tuple[Optional[float], Optional[str]]:
+        command = [
+            self.ffprobe_path,
+            "-v", "error",
+            "-print_format", "json",
+            "-show_entries", "format=duration:stream=duration",
+            path,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.timeout_seconds,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            if result.returncode != 0:
+                detail = result.stderr.strip() or f"exit code {result.returncode}"
+                return None, f"ffprobe 讀取影片長度失敗: {detail}"
+            duration = self.parse_duration(json.loads(result.stdout))
+            if duration is None:
+                return None, "影片沒有可用的 duration"
+            return duration, None
+        except FileNotFoundError:
+            return None, "找不到 ffprobe，已略過短影片分析"
+        except subprocess.TimeoutExpired:
+            return None, "ffprobe 讀取影片長度逾時"
+        except (json.JSONDecodeError, OSError) as exc:
+            return None, f"ffprobe 輸出解析失敗: {exc}"
+
+
 class ReviewClassifier:
     """執行 Phase 4 三類候選分析，結果只送往 ReviewWorkspace。"""
 
@@ -278,18 +357,24 @@ class ReviewClassifier:
         workspace: ReviewWorkspaceManager,
         duplicate_detector: Optional[ExactDuplicateDetector] = None,
         blur_detector=OpenCVBlurDetector,
+        duration_probe: Optional[VideoDurationProbe] = None,
         screenshot_enabled: bool = True,
         blur_enabled: bool = True,
+        short_video_enabled: bool = True,
         screenshot_threshold: int = SCREENSHOT_SCORE_THRESHOLD,
         blur_threshold: float = DEFAULT_BLUR_THRESHOLD,
+        short_video_max_seconds: float = SHORT_VIDEO_MAX_SECONDS,
     ):
         self.workspace = workspace
         self.duplicate_detector = duplicate_detector or ExactDuplicateDetector()
         self.blur_detector = blur_detector
+        self.duration_probe = duration_probe or VideoDurationProbe()
         self.screenshot_enabled = screenshot_enabled
         self.blur_enabled = blur_enabled
+        self.short_video_enabled = short_video_enabled
         self.screenshot_threshold = screenshot_threshold
         self.blur_threshold = blur_threshold
+        self.short_video_max_seconds = max(0.0, float(short_video_max_seconds))
 
     @staticmethod
     def _deduplicate_targets(
@@ -383,5 +468,33 @@ class ReviewClassifier:
                         result.entries.append(entry)
                     except Exception as exc:
                         result.errors.append(f"{target.group_id}: 模糊審核登記失敗 ({exc})")
+
+            if self.short_video_enabled and extension not in EXT_PHOTOS:
+                # Live Photo 的短 MOV/MP4 是相片群組的必要成員，分類前直接排除。
+                if target.contains_live_photo_video:
+                    continue
+                duration, warning = self.duration_probe.probe(primary_path)
+                if warning:
+                    result.warnings.append(f"{target.group_id}: {warning}")
+                if duration is not None and 0 < duration <= self.short_video_max_seconds:
+                    try:
+                        entry = self.workspace.register_review(
+                            job_id,
+                            target.group_id,
+                            "SHORT_VIDEO",
+                            primary_path,
+                            score=duration,
+                            reason=(
+                                f"影片長度 {duration:.3f} 秒，"
+                                f"門檻 {self.short_video_max_seconds:.3f} 秒"
+                            ),
+                            cache_path=target.cache_path,
+                            display_filename=display_filename,
+                        )
+                        result.entries.append(entry)
+                    except Exception as exc:
+                        result.errors.append(
+                            f"{target.group_id}: 短影片審核登記失敗 ({exc})"
+                        )
 
         return result
