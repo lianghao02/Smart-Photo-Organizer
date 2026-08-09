@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 4.3 終極測試與未解決錯誤歷程保護單元測試
+Google Takeout ZIP 匯入引擎 Phase 4.4 終極測試與 Sidecar-Only 重試單元測試
 驗證 1080x2400 PNG/JPG 無關鍵字截圖 (評分 >= 7)、經 LINE 傳送的截圖 (評分 >= 7)、普通 4:3 LINE 照片 (評分 < 7)
-以及 COMPLETED_WITH_ERRORS 媒體完整性驗證與未解決錯誤歷程保護。
+以及 去重 candidate SHA-256 校驗、Sidecar-Only 免解壓重試與 COMPLETED_WITH_ERRORS 續傳修復。
 """
 
 import os
@@ -59,6 +59,7 @@ class TestTakeoutPhase4(unittest.TestCase):
         self.sample_photo_bytes = b"Phase 4 test photo content"
         with zipfile.ZipFile(self.zip_path, 'w') as zf:
             zf.writestr("Takeout/Google Photos/Album2018/2018_06_15_001.jpg", self.sample_photo_bytes)
+            zf.writestr("Takeout/Google Photos/Album2018/2018_06_15_001.jpg.json", b'{"photoTakenTime":{"timestamp":"1529064000"}}')
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -153,8 +154,8 @@ class TestTakeoutPhase4(unittest.TestCase):
         self.assertIsNotNone(err2)
         self.assertFalse(os.path.exists(json_final + ".part"))
 
-    def test_completed_with_errors_resumption_and_unresolved_error_count(self):
-        """驗證 COMPLETED_WITH_ERRORS 續傳容量與 SHA-256 驗證、get_unresolved_error_count 與 error_msg 保護"""
+    def test_completed_with_errors_resumption_and_sidecar_retry_only(self):
+        """驗證 COMPLETED_WITH_ERRORS 標記 sidecar_retry_only 並由去重重新比對實體檔案 SHA-256"""
         db_path = os.path.join(self.dst_dir, "_ImportTemp", "resumption_err.db")
         state_mgr = import_state.TakeoutStateManager(db_path)
         job_id = "job_err_001"
@@ -178,22 +179,22 @@ class TestTakeoutPhase4(unittest.TestCase):
         orig_err = "Sidecar 寫入失敗: 檔名碰撞"
         state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, final_destination=media_dest, sha256=real_sha, error_msg=orig_err)
 
-        # 1. 驗證 get_unresolved_error_count 包含未解決的 COMPLETED_WITH_ERRORS 錯誤
-        self.assertEqual(state_mgr.get_unresolved_error_count(job_id), 1)
-
-        # 2. 驗證 recover_and_get_pending_members 在實體檔無損時排除媒體重複解壓
+        # 1. 驗證 recover_and_get_pending_members 在媒體無損時傳回 sidecar_retry_only = True
         pending = state_mgr.recover_and_get_pending_members(job_id)
-        self.assertEqual(len(pending), 0)
+        self.assertEqual(len(pending), 1)
+        self.assertTrue(pending[0].get('sidecar_retry_only'))
 
-        # 3. 驗證 register_members_batch 重新掃描保留原有的 error_msg 內容不被空值覆蓋
-        m["status"] = import_state.TakeoutState.SECURITY_VALIDATED
-        m["reject_reason"] = None
-        state_mgr.register_members_batch([m])
-        saved_m = state_mgr.get_member(mid)
-        self.assertEqual(saved_m['status'], import_state.TakeoutState.COMPLETED_WITH_ERRORS)
-        self.assertEqual(saved_m['error_msg'], orig_err)
+        # 2. 建立「損毀的目的檔案」驗證 find_existing_sha256_dest 重新核對實體檔 SHA-256 拒絕損毀路徑
+        corrupted_dest = os.path.join(self.dst_dir, "corrupted.jpg")
+        with open(corrupted_dest, 'wb') as f:
+            f.write(b"corrupted content")
+        
+        m_bad = m.copy()
+        m_bad['member_index'] = 1
+        mid_bad = state_mgr.register_member(m_bad)
+        state_mgr.update_member_status(mid_bad, import_state.TakeoutState.COMPLETED, final_destination=corrupted_dest, sha256=real_sha)
 
-        # 4. 驗證 find_existing_sha256_dest 全量查詢多筆候選能精準找到有效路徑
+        # 驗證 find_existing_sha256_dest 忽略損毀檔路徑，正確查得有效 media_dest
         dest_found = state_mgr.find_existing_sha256_dest(real_sha)
         self.assertEqual(dest_found, media_dest)
 

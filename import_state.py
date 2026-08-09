@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v4.3 Phase 4.3 錯誤歷程保護與完整性驗證版)
-提供符合 ACID 的批次狀態推進、單向狀態保護、job_type 隔離、COMPLETED_WITH_ERRORS 去重與復原驗證。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v4.4 Sidecar-Only 重試與去重 SHA-256 驗證版)
+提供符合 ACID 的批次狀態推進、單向狀態保護、job_type 隔離、Sidecar-Only 重試與實體雜湊去重驗證。
 """
 
 import os
@@ -140,7 +140,6 @@ class TakeoutStateManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_archives_fingerprint ON archives(fingerprint);")
 
     def _migrate_db(self):
-        """自動 Schema 遷移與舊資料庫外鍵安全的重複資料清理 (FK-Safe Migration)"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             
@@ -279,10 +278,6 @@ class TakeoutStateManager:
             return [dict(row) for row in cursor.fetchall()]
 
     def register_members_batch(self, members_data: List[Dict[str, Any]]):
-        """
-        採用單向狀態推進 UPSERT (Prevent Status Downgrade & Preserve error_msg)：
-        受保護狀態不被降級，且若為受保護狀態保留原有的 error_msg 內容。
-        """
         if not members_data:
             return
         now = datetime.datetime.now().isoformat()
@@ -387,7 +382,6 @@ class TakeoutStateManager:
             return [dict(row) for row in cursor.fetchall()]
 
     def get_unresolved_error_count(self, job_id: str) -> int:
-        """全量查詢 SQLite 取得指定 Job 中狀態為 FAILED, RECOVERY_CONFLICT 或 COMPLETED_WITH_ERRORS 的未解決錯誤總數"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -398,7 +392,11 @@ class TakeoutStateManager:
             return row['cnt'] if row else 0
 
     def find_existing_sha256_dest(self, sha256_hash: str) -> Optional[str]:
-        """全量逐筆檢查去重查詢：搜尋 SQLite 中已有相同 SHA-256 的已完成媒體目的路徑，確認檔案真實存在後回傳"""
+        """
+        全量去重查詢與實體檔雜湊驗證：
+        遍歷 SQLite 中已有相同 SHA-256 的媒體目的路徑，重新計算實體檔案 SHA-256 確認完全無損後始回傳。
+        若實體檔毀損，跳過並繼續檢查其他候選，絕不誤刪剛解壓之正確 .part 檔。
+        """
         if not sha256_hash:
             return None
         with self._get_conn() as conn:
@@ -411,7 +409,11 @@ class TakeoutStateManager:
             for row in rows:
                 dest = row['final_destination']
                 if dest and os.path.isfile(dest):
-                    return dest
+                    try:
+                        if self._compute_sha256(dest) == sha256_hash:
+                            return dest
+                    except OSError:
+                        pass
         return None
 
     def _is_safe_part_path(self, job_id: str, part_path: str) -> bool:
@@ -444,7 +446,8 @@ class TakeoutStateManager:
 
     def recover_and_get_pending_members(self, job_id: str) -> List[Dict[str, Any]]:
         """
-        Phase 4.3 崩潰恢復與續傳引擎 (含有效容量與 SHA-256 驗證之 COMPLETED_WITH_ERRORS 續傳防護)
+        Phase 4.4 崩潰恢復與 Sidecar-Only 重試引擎
+        當媒體實體檔案無損且 SHA-256 符合時，標記 sidecar_retry_only = True，免除媒體二次解壓並直接重試 Sidecar 落碟。
         """
         with self._get_conn() as conn:
             cursor = conn.cursor()
@@ -476,13 +479,15 @@ class TakeoutStateManager:
             part_exists = is_part_safe and os.path.isfile(part_p)
             dest_exists = dest_p is not None and os.path.isfile(dest_p) and not os.path.islink(dest_p)
 
-            # COMPLETED_WITH_ERRORS 處置：核對目的媒體檔案之容量與 SHA-256，確認無損才跳過媒體解壓
+            # COMPLETED_WITH_ERRORS 處置：核對媒體實體檔 SHA-256 無損時，標記 sidecar_retry_only 重試 Sidecar
             if status == TakeoutState.COMPLETED_WITH_ERRORS:
                 if dest_exists:
                     try:
                         st = os.stat(dest_p)
                         if st.st_size == m['uncompressed_size']:
-                            if not m['sha256'] or self._compute_sha256(dest_p) == m['sha256']:
+                            if m['sha256'] and self._compute_sha256(dest_p) == m['sha256']:
+                                m['sidecar_retry_only'] = True
+                                pending_members.append(m)
                                 continue
                     except OSError:
                         pass

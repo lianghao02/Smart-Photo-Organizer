@@ -2328,6 +2328,39 @@ class WebBridge:
                     return
 
                 mid = m['member_id']
+
+                # 0. Sidecar-Only 重試模式 (媒體實體檔已成功無損歸檔，僅重試 Sidecar JSON 落碟)
+                if m.get('sidecar_retry_only'):
+                    sidecar_info = state_mgr.get_sidecar_for_media(mid)
+                    sidecar_retry_success = False
+                    if sidecar_info:
+                        json_arc_path = archive_map.get(sidecar_info['archive_id'])
+                        sidecar_json_bytes = None
+                        if json_arc_path and os.path.exists(json_arc_path):
+                            try:
+                                with zipfile.ZipFile(json_arc_path, 'r') as zf_json:
+                                    info_j = zf_json.infolist()[sidecar_info['member_index']]
+                                    sidecar_json_bytes = zf_json.read(info_j)
+                            except Exception:
+                                pass
+
+                        if sidecar_json_bytes and getattr(self._app_config, 'sidecar_enabled', True):
+                            json_final = m['final_destination'] + ".json"
+                            ok, err_msg = media_metadata.write_sidecar_atomic(sidecar_json_bytes, json_final)
+                            if ok:
+                                sidecar_retry_success = True
+                                state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED, error_msg=None)
+                                self._on_log(f"✅ Sidecar JSON 補寫成功 [{m['filename']}]", "info")
+                                archived_count += 1
+                                continue
+                            else:
+                                self._on_log(f"⚠️ Sidecar JSON 補寫失敗 [{m['filename']}]: {err_msg}", "warning")
+                                pipeline_errors += 1
+                                continue
+                    if not sidecar_retry_success:
+                        archived_count += 1
+                        continue
+
                 archive_path = archive_map.get(m['archive_id'])
                 if not archive_path or not os.path.exists(archive_path):
                     state_mgr.update_member_status(mid, import_state.TakeoutState.FAILED, error_msg="封存檔路徑不存在")
@@ -2538,12 +2571,13 @@ class WebBridge:
             self._on_log(f"  • 跳過重複內容 (DUPLICATE_SKIPPED)：{skipped_dup_count:,} 個", "info")
             self._on_log(f"  • Sidecar 精準配對數：{report['matched_pair_count']:,} 組", "info")
             self._on_log(f"  • 宣告解壓後總容量：{report['total_uncompressed_gb']} GB", "info")
-            if pipeline_errors > 0:
-                self._on_log(f"  ⚠️ 失敗/損毀成員：{pipeline_errors} 個", "warning")
+            total_unresolved = pipeline_errors + unresolved_db_errors
+            if total_unresolved > 0:
+                self._on_log(f"  ⚠️ 失敗/未解決錯誤成員：{total_unresolved} 個 (本次失敗: {pipeline_errors}, 歷史未解決: {unresolved_db_errors})", "warning")
             self._on_log("=" * 60, "info")
-            self._on_log(f"=== ✅ Phase 3 逐檔直讀歸檔完成！狀態: {final_status} ===", "info")
+            self._on_log(f"=== ✅ Phase 4 逐檔直讀與 Sidecar 歸檔完成！狀態: {final_status} ===", "info")
 
-            msg = f"Takeout 直讀歸檔完成 ({final_status})！\n成功歸檔: {archived_count} 個\n跳過重複: {skipped_dup_count} 個\n失敗成員: {pipeline_errors} 個"
+            msg = f"Takeout 直讀歸檔完成 ({final_status})！\n成功歸檔: {archived_count} 個\n跳過重複: {skipped_dup_count} 個\n未解決錯誤: {total_unresolved} 個 (本次: {pipeline_errors}, 歷史: {unresolved_db_errors})"
             with self._queue_lock:
                 self._process_finished_msg = msg
             self._on_status("paused")
