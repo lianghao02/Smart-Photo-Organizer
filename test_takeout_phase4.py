@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 4.1 落地與測試重構單元測試
-驗證 Mock DateConflict 隔離、LowConfidenceDate 隔離、7 分制截圖 (含非關鍵字截圖與 line_album_ 正確不隔離)
-以及 write_sidecar_atomic Helper 成功、碰撞與失敗狀態追蹤
+Google Takeout ZIP 匯入引擎 Phase 4.2 精準截圖引擎與 COMPLETED_WITH_ERRORS 續傳保護測試
+驗證真實 1080x2400 無關鍵字 PNG/JPG 截圖 (評分 >= 7)、line_album_ 照片 (評分 < 7)、Mock DateConflict/LowConfidenceDate 與 Sidecar 失敗後續傳保護
 """
 
 import os
@@ -13,6 +12,7 @@ import zipfile
 import unittest
 import datetime
 from pathlib import Path
+from PIL import Image
 
 # 動態加載專案目錄
 PROJECT_ROOT = str(Path(__file__).resolve().parent)
@@ -62,32 +62,42 @@ class TestTakeoutPhase4(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_7_point_screenshot_classification_and_line_album_non_screenshot(self):
-        """驗證 7 分制截圖評分引擎：關鍵字截圖、非關鍵字手機直向 PNG (評分 >= 7) 及普通 line_album_ 照片 (評分 < 7)"""
-        part_path = os.path.join(self.dst_dir, "temp.png")
-        with open(part_path, 'wb') as f:
-            f.write(self.sample_photo_bytes)
+    def test_non_keyword_1080x2400_screenshot_scoring(self):
+        """驗證真實 1080x2400 無關鍵字截圖 (PNG 評分 8 分, JPG 評分 7 分) 正確劃入 Screenshots 隔離區"""
+        # 1. 建立真實 1080x2400 PNG 無 EXIF 圖片
+        png_path = os.path.join(self.dst_dir, "2026_07_23_304.png")
+        img_png = Image.new('RGB', (1080, 2400), color='white')
+        img_png.save(png_path, 'PNG')
 
         date_parser = app_main.DateParser()
-
-        # 1. 檔名關鍵字截圖 ➔ 評分 >= 7
-        meta1 = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
-            part_path=part_path, filename="Screenshot_20230520.png", dst_root=self.dst_dir, date_parser=date_parser
+        meta_png = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
+            part_path=png_path, filename="2026_07_23_304.png", dst_root=self.dst_dir, date_parser=date_parser
         )
-        self.assertTrue(meta1['is_screenshot'])
-        self.assertGreaterEqual(meta1['screenshot_score'], 7)
-        self.assertIn("_Excluded", meta1['target_dir'])
-        self.assertIn("Screenshots", meta1['target_dir'])
+        self.assertTrue(meta_png['is_screenshot'])
+        self.assertGreaterEqual(meta_png['screenshot_score'], 7)
+        self.assertIn("Screenshots", meta_png['target_dir'])
 
-        # 2. 普通 LINE 相簿照片 line_album_photo.jpg ➔ 評分小於 7 (不誤判為截圖)
-        meta2 = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
-            part_path=part_path, filename="line_album_20230520.jpg", dst_root=self.dst_dir, date_parser=date_parser
+        # 2. 建立真實 1080x2400 JPG 無 EXIF 圖片
+        jpg_path = os.path.join(self.dst_dir, "2026_07_23_304.jpg")
+        img_jpg = Image.new('RGB', (1080, 2400), color='white')
+        img_jpg.save(jpg_path, 'JPEG')
+
+        meta_jpg = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
+            part_path=jpg_path, filename="2026_07_23_304.jpg", dst_root=self.dst_dir, date_parser=date_parser
         )
-        self.assertFalse(meta2['is_screenshot'])
-        self.assertLess(meta2['screenshot_score'], 7)
+        self.assertTrue(meta_jpg['is_screenshot'])
+        self.assertGreaterEqual(meta_jpg['screenshot_score'], 7)
+        self.assertIn("Screenshots", meta_jpg['target_dir'])
+
+        # 3. 普通 LINE 相簿照片 line_album_20230520.jpg ➔ 評分小於 7 (不誤判為截圖)
+        meta_line = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
+            part_path=png_path, filename="line_album_20230520.jpg", dst_root=self.dst_dir, date_parser=date_parser
+        )
+        self.assertFalse(meta_line['is_screenshot'])
+        self.assertLess(meta_line['screenshot_score'], 7)
 
     def test_date_conflict_isolation_with_mock_parser(self):
-        """驗證真實 DateConflict 分支：當 DateParser 回傳 conflict = True 時，目標目錄為 _Review/DateConflict"""
+        """驗證 DateConflict 分支：當 DateParser 回傳 conflict = True 時，目標目錄為 _Review/DateConflict"""
         mock_parser = MockConflictDateParser()
         part_path = os.path.join(self.dst_dir, "temp_conflict.jpg")
         with open(part_path, 'wb') as f:
@@ -102,7 +112,7 @@ class TestTakeoutPhase4(unittest.TestCase):
         self.assertEqual(os.path.normpath(meta_res['target_dir']), os.path.normpath(expected_dir))
 
     def test_low_confidence_date_isolation(self):
-        """驗證真實 LowConfidenceDate 分支：當 confidence < 50 時，目標目錄為 _Review/LowConfidenceDate"""
+        """驗證 LowConfidenceDate 分支：當 confidence < 50 時，目標目錄為 _Review/LowConfidenceDate"""
         mock_parser = MockLowConfidenceDateParser()
         part_path = os.path.join(self.dst_dir, "temp_low.jpg")
         with open(part_path, 'wb') as f:
@@ -133,6 +143,41 @@ class TestTakeoutPhase4(unittest.TestCase):
         self.assertFalse(ok2)
         self.assertIsNotNone(err2)
         self.assertFalse(os.path.exists(json_final + ".part"))
+
+    def test_completed_with_errors_resumption_protection(self):
+        """驗證 COMPLETED_WITH_ERRORS 續傳保護：目的檔已存在時不被加入 pending_members 亦不降級"""
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "resumption_err.db")
+        state_mgr = import_state.TakeoutStateManager(db_path)
+        job_id = "job_err_001"
+        state_mgr.create_job(job_id, import_state.JobType.IMPORT, self.test_dir, self.dst_dir)
+
+        arc_id = state_mgr.record_archive(job_id, self.zip_path, 100, 1.0, "fp_err")
+        media_dest = os.path.join(self.dst_dir, "2018_06_15_001.jpg")
+        with open(media_dest, 'wb') as f:
+            f.write(self.sample_photo_bytes)
+
+        m = {
+            "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp_err",
+            "member_index": 0, "member_name": "photo.jpg", "normalized_path": "photo.jpg",
+            "filename": "photo.jpg", "member_crc": 100, "uncompressed_size": len(self.sample_photo_bytes),
+            "compressed_size": 100, "is_media": True, "is_json": False,
+            "status": import_state.TakeoutState.COMPLETED_WITH_ERRORS
+        }
+        mid = state_mgr.register_member(m)
+        state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, final_destination=media_dest, sha256="abc")
+
+        # 1. 驗證 recover_and_get_pending_members 排除媒體重新解壓
+        pending = state_mgr.recover_and_get_pending_members(job_id)
+        self.assertEqual(len(pending), 0)
+
+        # 2. 驗證 register_members_batch 重新掃描不會將 COMPLETED_WITH_ERRORS 降級
+        m["status"] = import_state.TakeoutState.SECURITY_VALIDATED
+        state_mgr.register_members_batch([m])
+        self.assertEqual(state_mgr.get_member(mid)['status'], import_state.TakeoutState.COMPLETED_WITH_ERRORS)
+
+        # 3. 驗證 find_existing_sha256_dest 能查到 COMPLETED_WITH_ERRORS 的去重目的檔
+        dest_found = state_mgr.find_existing_sha256_dest("abc")
+        self.assertEqual(dest_found, media_dest)
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v3.2 全量封存檔與 CANCELLED 復原版)
-提供符合 ACID 的批次狀態推進、單向狀態保護、job_type 隔離、全量封存檔查詢與 CANCELLED 成員復原機制。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v4.2 COMPLETED_WITH_ERRORS 續傳保護版)
+提供符合 ACID 的批次狀態推進、單向狀態保護、job_type 隔離、COMPLETED_WITH_ERRORS 去重與復原保護。
 """
 
 import os
@@ -291,7 +291,7 @@ class TakeoutStateManager:
     def register_members_batch(self, members_data: List[Dict[str, Any]]):
         """
         採用單向狀態推進 UPSERT (Prevent Status Downgrade)：
-        若成員狀態已推進至 VERIFIED, METADATA_PARSED, DESTINATION_RESERVED, COMPLETED，重新掃描時保護該狀態不被降級。
+        包含 COMPLETED 與 COMPLETED_WITH_ERRORS，重新掃描時保護該狀態不被降級。
         """
         if not members_data:
             return
@@ -325,7 +325,7 @@ class TakeoutStateManager:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(archive_id, member_index) DO UPDATE SET
                 status = CASE
-                    WHEN members.status IN ('VERIFIED', 'METADATA_PARSED', 'DESTINATION_RESERVED', 'COMPLETED', 'DUPLICATE_SKIPPED', 'PREVIEW_ANALYZED')
+                    WHEN members.status IN ('VERIFIED', 'METADATA_PARSED', 'DESTINATION_RESERVED', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'DUPLICATE_SKIPPED', 'PREVIEW_ANALYZED')
                     THEN members.status
                     ELSE excluded.status
                 END,
@@ -395,14 +395,14 @@ class TakeoutStateManager:
             return [dict(row) for row in cursor.fetchall()]
 
     def find_existing_sha256_dest(self, sha256_hash: str) -> Optional[str]:
-        """全域去重查詢：搜尋 SQLite 中任何已有相同 SHA-256 的已完成媒體目的路徑"""
+        """全域去重查詢：搜尋 SQLite 中已有相同 SHA-256 的已完成媒體目的路徑 (包含 COMPLETED 與 COMPLETED_WITH_ERRORS)"""
         if not sha256_hash:
             return None
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT final_destination FROM members WHERE sha256 = ? AND status = ? AND final_destination IS NOT NULL",
-                (sha256_hash, TakeoutState.COMPLETED)
+                "SELECT final_destination FROM members WHERE sha256 = ? AND status IN (?, ?) AND final_destination IS NOT NULL",
+                (sha256_hash, TakeoutState.COMPLETED, TakeoutState.COMPLETED_WITH_ERRORS)
             )
             row = cursor.fetchone()
             if row and row['final_destination'] and os.path.isfile(row['final_destination']):
@@ -444,9 +444,9 @@ class TakeoutStateManager:
 
     def recover_and_get_pending_members(self, job_id: str) -> List[Dict[str, Any]]:
         """
-        Phase 2/Phase 3 崩潰恢復與續傳引擎 (Crash Recovery Engine - 帶 CANCELLED 成員復原)
-        已排除 COMPLETED, PREVIEW_ANALYZED, SECURITY_REJECTED, DUPLICATE_SKIPPED, RECOVERY_CONFLICT
-        針對 CANCELLED 狀態的成員自動將其復原為 SECURITY_VALIDATED，確保使用者按下「開始」續傳時不漏處理。
+        Phase 2/Phase 3/Phase 4 崩潰恢復與續傳引擎 (Crash Recovery Engine - 包含 COMPLETED_WITH_ERRORS 續傳防護)
+        已排除 COMPLETED, COMPLETED_WITH_ERRORS (目的檔已存在時), PREVIEW_ANALYZED, SECURITY_REJECTED, DUPLICATE_SKIPPED, RECOVERY_CONFLICT
+        針對 CANCELLED 狀態的成員自動將其復原為 SECURITY_VALIDATED。
         """
         with self._get_conn() as conn:
             cursor = conn.cursor()
@@ -477,6 +477,11 @@ class TakeoutStateManager:
             is_part_safe = part_p is not None and self._is_safe_part_path(job_id, part_p)
             part_exists = is_part_safe and os.path.isfile(part_p)
             dest_exists = dest_p is not None and os.path.isfile(dest_p) and not os.path.islink(dest_p)
+
+            # COMPLETED_WITH_ERRORS 處置：若媒體實體檔案已歸檔成功，直接保護排除，不重新解壓
+            if status == TakeoutState.COMPLETED_WITH_ERRORS:
+                if dest_exists:
+                    continue
 
             # CANCELLED 狀態復原
             if status == TakeoutState.CANCELLED:
