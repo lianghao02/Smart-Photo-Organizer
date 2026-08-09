@@ -1,56 +1,50 @@
-# Current Task：v3.0 Phase 3 — Review Workspace 骨架
+# Current Task：v3.0 Phase 4 — 重複、模糊與截圖審核分類
 
 ## 前置基線
 
-- Phase 2 Codex 簽收 Commit：`5f33fa1`
-- Phase 2 簽收測試：全專案 71 項中 70 通過、1 項因 Windows Symlink 權限明確略過
-- Phase 0～2 已凍結；除修復 Phase 3 造成的 Regression 外，不得改變既有 Takeout、SidecarMatcher 或 MediaGroup 契約。
+- Phase 3 簽收 Commit：`3eaeec4`
+- Phase 3 簽收測試：全專案 80 項中 79 通過、1 項因 Windows Symlink 權限明確略過
+- v3.0 新流程與既有 v2.9 直接整理流程並存；Phase 10 完成替代 UI 前，不移除舊功能。
 
 ## 目標
 
-建立 `_Review`、`_ReviewCache`、SQLite `ReviewEntry` 與 Windows `.lnk` 安全建立／解析骨架。
-Phase 3 只提供審核工作區與權威登記，不執行重複、模糊、截圖等分類，也不搬移、刪除或改名任何來源媒體。
+建立 v3.0 人工審核分類器，沿用既有完全重複、Laplacian 模糊與 7 分截圖概念，但分類結果只能建立 SQLite ReviewEntry 與 `_Review/01`、`03`、`04` 捷徑。
 
 ## 必要功能
 
-1. 建立固定資料夾：
-   - `_Review/01_重複照片`
-   - `_Review/02_相似照片`
-   - `_Review/03_模糊照片`
-   - `_Review/04_螢幕截圖`
-   - `_Review/05_短影片`
-   - `_Review/06_日期異常`
-   - `_Review/99_待刪除`
-   - `_ReviewCache`
-2. 新增 `review_workspace.py`：
-   - ReviewEntry 資料模型。
-   - 捷徑零覆寫建立、冪等重跑與安全解析。
-   - `.lnk` 只能指向允許的本機來源媒體或 `_ReviewCache`。
-   - JSON 不得單獨建立捷徑。
-   - ZIP 群組只規劃 `_ReviewCache/<job_id>/<group_id>`，不得提前全量解壓。
-3. 擴充 SQLite：
-   - `review_entries` 資料表、索引及外鍵。
-   - 提供建立、取得、列舉與狀態更新 API。
-   - 同一 Job／MediaGroup／分類只保留一筆權威紀錄。
-4. DRY_RUN 只回傳預測結果，不建立資料夾、捷徑或 SQLite ReviewEntry。
-5. 使用者把已登記捷徑移至 `99_待刪除` 後，仍可依檔名內 ReviewEntry ID、SQLite 與目標路徑完成驗證。
+1. 完全重複：
+   - 採 MediaGroup 容量 → partial SHA-256 → full SHA-256 三階段。
+   - 只有完整內容相同才標記，部分雜湊碰撞不得誤判。
+   - Live Photo／RAW 群組必須比較所有非 JSON 媒體，不能只比較主照片。
+   - 決定性選出一組保留，其餘登記至 `01_重複照片`。
+2. 模糊照片：
+   - 沿用 OpenCV Laplacian，預設門檻 100。
+   - OpenCV／NumPy 為選用依賴；未安裝時明確警告但不阻斷其他分類。
+   - 命中只登記至 `03_模糊照片`，不得建立 `_Blurry` 或搬移媒體。
+3. 截圖／監視器畫面：
+   - 沿用 `MediaMetadataExtractor.calculate_screenshot_score()` 可解釋 7 分制。
+   - 必須保留並使用 Takeout 原始檔名，不可使用不具語意的快取檔名評分。
+   - 命中只登記至 `04_螢幕截圖`，不得移至 `_Excluded/Screenshots`。
+4. 同一 MediaGroup 可同時出現在多個分類；實體媒體保持單一、不重複處理。
+5. 雜湊前後核對容量與修改時間；分析期間被外部修改的檔案不得沿用舊結果。
+6. JSON 不參與媒體重複雜湊，也不建立捷徑；Live Photo 影片必須保留在群組簽章中。
 
-## 安全限制
+## 不在本階段
 
-- SQLite 是唯一權威狀態；捷徑內容不可單獨視為可信。
-- 不覆寫既有 `.lnk`；既有捷徑若指向不同目標須標記錯誤。
-- 不接受 `_Review` 以外的捷徑，也不接受允許根目錄以外的目標。
-- 本階段不處理 `99_待刪除`、不建立 Quarantine，也不修改 UI。
+- `99_待刪除` 與 Quarantine 搬移。
+- 短影片、相似照片、日期異常與最終日期歸檔。
+- UI 切換與舊流程移除。
 
 ## 驗收結果
 
-- [x] `review_workspace.py` 與 SQLite ReviewEntry API 已完成。
-- [x] 固定 Review 目錄骨架與 ReviewCache 路徑已完成。
-- [x] 中文檔名、同群組多分類、冪等重跑、零覆寫與竄改攔截測試通過。
-- [x] JSON／外部路徑拒絕測試通過。
-- [x] `99_待刪除` 捷徑重新驗證測試通過。
-- [x] DRY_RUN 與 ZIP 快取不提前建立測試通過。
-- [x] Windows `WScript.Shell` 真實 `.lnk` 中文路徑建立與解析整合驗證通過。
-- [x] Phase 3 測試 9/9 通過。
-- [x] 全專案 80 項測試中 79 通過、1 項因 Windows Symlink 權限明確略過；語法載入與 `git diff --check` 通過。
-- [x] Codex 自我複查完成，待建立 Phase 3 簽收 Commit。
+- [x] 新增 `review_classifier.py`，沒有修改來源媒體的檔案操作。
+- [x] 完整重複三階段與 partial collision 防誤判測試通過。
+- [x] Live Photo 完整群組比較測試通過。
+- [x] 7 分截圖、原始檔名證據與來源內容不變測試通過。
+- [x] 模糊候選只建立 ReviewEntry／捷徑測試通過。
+- [x] 同群組多分類與選用 OpenCV 降級測試通過。
+- [x] 分析期間媒體變更攔截測試通過。
+- [x] ZIP Live Photo／RAW 群組成員未完整實體化時禁止降級判定。
+- [x] Phase 4 新增測試 10/10 通過。
+- [x] 全專案 90 項測試中 89 通過、1 項因 Windows Symlink 權限明確略過；語法載入與 `git diff --check` 通過。
+- [x] Codex 自我複查完成，待建立 Phase 4 簽收 Commit。

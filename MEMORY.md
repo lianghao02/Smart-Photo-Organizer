@@ -16,6 +16,8 @@
 - MediaGroup SQLite 寫入必須冪等，重跑同一群組時不得累積重複的 `media_group_members`。
 - Review 捷徑採 `ReviewEntry ID__可讀檔名.lnk`；使用者移至 `99_待刪除` 後仍以 ID 回查 SQLite，不信任捷徑檔名或目標本身。
 - ZIP 審核快取必須固定在 `_ReviewCache/<job_id>/<group_id>`，呼叫端不得自訂任意 cache 路徑。
+- 完全重複必須比較整個 MediaGroup 的所有非 JSON 媒體；Live Photo／RAW 成員未完整實體化時禁止降級成只比較主照片。
+- Takeout 截圖評分與捷徑顯示必須沿用原始檔名，不可使用 UUID 或 `.part` 快取名稱作為證據。
 
 ## 📦 外部依賴追蹤
 
@@ -48,3 +50,4 @@
 - 2026-08-09：決定先完成 Phase 0 Takeout 基線驗收，再進入 v3.0 Phase 1；UI 最終整理延至 Phase 10。
 - 2026-08-09：完成 v3.0 Phase 2 Codex 獨立複查；收斂 Live Photo／RAW 配對範圍，補上跨 ZIP、跨任務與 SQLite 冪等防護。
 - 2026-08-09：完成 v3.0 Phase 3 Review Workspace 骨架；確立 SQLite 權威 ReviewEntry、零覆寫捷徑與允許根目錄驗證。
+- 2026-08-09：完成 v3.0 Phase 4 審核分類器；重複、模糊與截圖只建立 ReviewEntry／捷徑，不再作為 v3 流程的直接搬移指令。

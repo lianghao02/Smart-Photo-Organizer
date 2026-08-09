@@ -8,6 +8,7 @@
 
 - 建立 v3.0 統一來源索引、SidecarMatcher 與 MediaGroup／Live Photo 配對基礎。
 - 建立 `_Review`／`_ReviewCache` 工作區、SQLite ReviewEntry 與 Windows 捷徑安全驗證骨架。
+- 新增 MediaGroup 層級完全重複、Laplacian 模糊與 7 分制截圖人工審核分類器。
 
 ### 修正
 
