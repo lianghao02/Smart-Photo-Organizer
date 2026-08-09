@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 4.6 終極測試與 Coordinator 整合測試
+Google Takeout ZIP 匯入引擎 Phase 4.7 終極測試與 WebBridge 整合測試
 驗證 1080x2400 PNG/JPG 無關鍵字截圖 (評分 >= 7)、經 LINE 傳送的截圖 (評分 >= 7)、普通 4:3 LINE 照片 (評分 < 7)
-以及 Sidecar 冪等落碟、Coordinator 層級 sidecar_retry_only 免解壓重試與 COMPLETED 狀態修復。
+以及 損毀去重檔過濾 (獨立測試)、Sidecar 冪等落碟、WebBridge 端到端 _process_sidecar_only_retry 重試與 COMPLETED 狀態修復。
 """
 
 import os
@@ -12,7 +12,7 @@ import tempfile
 import zipfile
 import unittest
 import datetime
-from pathlibPath = Path
+from pathlib import Path
 
 # 動態加載專案目錄
 PROJECT_ROOT = str(Path(__file__).resolve().parent)
@@ -158,8 +158,52 @@ class TestTakeoutPhase4(unittest.TestCase):
         self.assertFalse(ok3)
         self.assertIn("SIDECAR_CONFLICT", err3)
 
+    def test_corrupted_deduplication_candidate_ignored(self):
+        """獨立測試：驗證 find_existing_sha256_dest 重新核對實體檔 SHA-256，損毀或被篡改之目的檔會被忽略，保護新解壓 .part"""
+        db_path = os.path.join(self.dst_dir, "_ImportTemp", "dedup_corrupt.db")
+        state_mgr = import_state.TakeoutStateManager(db_path)
+        job_id = "job_dedup_001"
+        state_mgr.create_job(job_id, import_state.JobType.IMPORT, self.test_dir, self.dst_dir)
+
+        arc_id = state_mgr.record_archive(job_id, self.zip_path1, 100, 1.0, "fp_dedup")
+
+        # 1. 有效實體媒體檔
+        valid_dest = os.path.join(self.dst_dir, "valid.jpg")
+        with open(valid_dest, 'wb') as f:
+            f.write(self.sample_photo_bytes)
+        valid_sha = state_mgr._compute_sha256(valid_dest)
+
+        # 2. 損毀實體媒體檔
+        corrupted_dest = os.path.join(self.dst_dir, "corrupted.jpg")
+        with open(corrupted_dest, 'wb') as f:
+            f.write(b"corrupted content")
+
+        m1 = {
+            "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp_dedup",
+            "member_index": 0, "member_name": "photo1.jpg", "normalized_path": "photo1.jpg",
+            "filename": "photo1.jpg", "member_crc": 100, "uncompressed_size": len(self.sample_photo_bytes),
+            "compressed_size": 100, "is_media": True, "is_json": False,
+            "status": import_state.TakeoutState.COMPLETED
+        }
+        mid1 = state_mgr.register_member(m1)
+        state_mgr.update_member_status(mid1, import_state.TakeoutState.COMPLETED, final_destination=corrupted_dest, sha256=valid_sha)
+
+        m2 = {
+            "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp_dedup",
+            "member_index": 1, "member_name": "photo2.jpg", "normalized_path": "photo2.jpg",
+            "filename": "photo2.jpg", "member_crc": 100, "uncompressed_size": len(self.sample_photo_bytes),
+            "compressed_size": 100, "is_media": True, "is_json": False,
+            "status": import_state.TakeoutState.COMPLETED
+        }
+        mid2 = state_mgr.register_member(m2)
+        state_mgr.update_member_status(mid2, import_state.TakeoutState.COMPLETED, final_destination=valid_dest, sha256=valid_sha)
+
+        # 驗證 find_existing_sha256_dest 忽略損毀檔路徑，自動找到第二筆有效路徑 valid_dest
+        found = state_mgr.find_existing_sha256_dest(valid_sha)
+        self.assertEqual(found, valid_dest)
+
     def test_completed_with_errors_coordinator_end_to_end_retry(self):
-        """驗證 Coordinator 端到端 Sidecar-only 重試：媒體無損時免解壓，補寫 Sidecar 成功後狀態轉為 COMPLETED (error_msg 清空)"""
+        """驗證 WebBridge._process_sidecar_only_retry 方法端到端 Sidecar-only 重試：媒體無損時免解壓，補寫 Sidecar 成功後狀態轉為 COMPLETED (error_msg 清空)"""
         db_path = os.path.join(self.dst_dir, "_ImportTemp", "resumption_e2e.db")
         state_mgr = import_state.TakeoutStateManager(db_path)
         job_id = "job_e2e_001"
@@ -202,27 +246,20 @@ class TestTakeoutPhase4(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertTrue(pending[0].get('sidecar_retry_only'))
 
-        # 2. 模擬 Coordinator 執行 sidecar_retry_only 流程
-        m = pending[0]
-        sidecar_info = state_mgr.get_sidecar_for_media(mid_media)
-        self.assertIsNotNone(sidecar_info)
-
+        # 2. 測試 WebBridge._process_sidecar_only_retry 正式產品方法
+        web_bridge = app_main.WebBridge()
         arc_map = {arc_id: self.zip_path1}
-        json_arc_path = arc_map.get(sidecar_info['archive_id'])
-        with zipfile.ZipFile(json_arc_path, 'r') as zf_json:
-            info_j = zf_json.infolist()[sidecar_info['member_index']]
-            sidecar_json_bytes = zf_json.read(info_j)
+        m = pending[0]
 
-        json_final = m['final_destination'] + ".json"
-        ok, err_msg = media_metadata.write_sidecar_atomic(sidecar_json_bytes, json_final)
+        ok, err = web_bridge._process_sidecar_only_retry(state_mgr, mid_media, m, arc_map)
         self.assertTrue(ok)
-
-        state_mgr.update_member_status(mid_media, import_state.TakeoutState.COMPLETED, error_msg=None)
+        self.assertIsNone(err)
 
         # 3. 驗證資料庫狀態更新為 COMPLETED 且 error_msg 已成功清空
         saved = state_mgr.get_member(mid_media)
         self.assertEqual(saved['status'], import_state.TakeoutState.COMPLETED)
         self.assertIsNone(saved['error_msg'])
+        json_final = media_dest + ".json"
         self.assertTrue(os.path.exists(json_final))
 
 

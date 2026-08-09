@@ -2201,7 +2201,47 @@ class WebBridge:
 
         self._processor = Processor(cfg, progress_callback=self._on_progress, status_callback=self._on_status)
         threading.Thread(target=self._run_processor, daemon=True).start()
-        return {"success": True}
+    def _process_sidecar_only_retry(self, state_mgr: Any, mid: int, m: Dict[str, Any], archive_map: Dict[int, str]) -> Tuple[bool, Optional[str]]:
+        """
+        Coordinator 層級 Sidecar-Only 重試處理方法 (供 Coordinator 與整合測試共同呼叫)
+        免除媒體檔二次解壓，直接讀取 ZIP 補寫 Sidecar，並將即時錯誤寫回 SQLite 與加算 pipeline_errors 計數。
+        """
+        sidecar_info = state_mgr.get_sidecar_for_media(mid)
+        if not sidecar_info:
+            return False, "無關聯的 Sidecar 紀錄"
+
+        json_arc_path = archive_map.get(sidecar_info['archive_id'])
+        if not json_arc_path or not os.path.exists(json_arc_path):
+            err_msg = f"Sidecar 封存檔路徑不存在: {json_arc_path}"
+            self._on_log(f"⚠️ {err_msg} [{m['filename']}]", "warning")
+            state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, error_msg=err_msg)
+            return False, err_msg
+
+        sidecar_json_bytes = None
+        try:
+            with zipfile.ZipFile(json_arc_path, 'r') as zf_json:
+                info_j = zf_json.infolist()[sidecar_info['member_index']]
+                sidecar_json_bytes = zf_json.read(info_j)
+        except Exception as e_zip:
+            err_zip_msg = f"讀取 Sidecar ZIP 封存檔失敗 [{os.path.basename(json_arc_path)}]: {e_zip}"
+            self._on_log(f"⚠️ {err_zip_msg} [{m['filename']}]", "warning")
+            state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, error_msg=err_zip_msg)
+            return False, err_zip_msg
+
+        if sidecar_json_bytes and getattr(self._app_config, 'sidecar_enabled', True):
+            json_final = m['final_destination'] + ".json"
+            ok, err_msg = media_metadata.write_sidecar_atomic(sidecar_json_bytes, json_final)
+            if ok:
+                state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED, error_msg=None)
+                self._on_log(f"✅ Sidecar JSON 補寫成功 [{m['filename']}]", "info")
+                return True, None
+            else:
+                err_sc_msg = f"Sidecar 重試失敗: {err_msg}"
+                self._on_log(f"⚠️ {err_sc_msg} [{m['filename']}]", "warning")
+                state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, error_msg=err_sc_msg)
+                return False, err_sc_msg
+
+        return False, "Sidecar 功能未開啟或數據為空"
 
     def _run_takeout_audit(self, src: str, dst: str, is_dry_run: bool):
         self._stop_event.clear()
@@ -2331,39 +2371,12 @@ class WebBridge:
 
                 # 0. Sidecar-Only 重試模式 (媒體實體檔已成功無損歸檔，僅重試 Sidecar JSON 落碟)
                 if m.get('sidecar_retry_only'):
-                    sidecar_info = state_mgr.get_sidecar_for_media(mid)
-                    sidecar_retry_success = False
-                    if sidecar_info:
-                        json_arc_path = archive_map.get(sidecar_info['archive_id'])
-                        sidecar_json_bytes = None
-                        if json_arc_path and os.path.exists(json_arc_path):
-                            try:
-                                with zipfile.ZipFile(json_arc_path, 'r') as zf_json:
-                                    info_j = zf_json.infolist()[sidecar_info['member_index']]
-                                    sidecar_json_bytes = zf_json.read(info_j)
-                            except Exception as e_zip:
-                                err_zip_msg = f"讀取 Sidecar ZIP 封存檔失敗 [{os.path.basename(json_arc_path)}]: {e_zip}"
-                                self._on_log(f"⚠️ {err_zip_msg} [{m['filename']}]", "warning")
-                                state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, error_msg=err_zip_msg)
-
-                        if sidecar_json_bytes and getattr(self._app_config, 'sidecar_enabled', True):
-                            json_final = m['final_destination'] + ".json"
-                            ok, err_msg = media_metadata.write_sidecar_atomic(sidecar_json_bytes, json_final)
-                            if ok:
-                                sidecar_retry_success = True
-                                state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED, error_msg=None)
-                                self._on_log(f"✅ Sidecar JSON 補寫成功 [{m['filename']}]", "info")
-                                archived_count += 1
-                                continue
-                            else:
-                                err_sc_msg = f"Sidecar 重試失敗: {err_msg}"
-                                self._on_log(f"⚠️ {err_sc_msg} [{m['filename']}]", "warning")
-                                state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, error_msg=err_sc_msg)
-                                pipeline_errors += 1
-                                continue
-                    if not sidecar_retry_success:
+                    ok, err_msg = self._process_sidecar_only_retry(state_mgr, mid, m, archive_map)
+                    if ok:
                         archived_count += 1
-                        continue
+                    else:
+                        pipeline_errors += 1
+                    continue
 
                 archive_path = archive_map.get(m['archive_id'])
                 if not archive_path or not os.path.exists(archive_path):
