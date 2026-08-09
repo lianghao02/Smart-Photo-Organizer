@@ -2527,7 +2527,8 @@ class WebBridge:
                     state_mgr.update_member_status(mid, import_state.TakeoutState.FAILED, error_msg=str(e))
                     self._on_log(f"⚠️ 成員歸檔失敗 [{m['filename']}]: {e}", "warning")
 
-            final_status = import_state.TakeoutState.COMPLETED_WITH_ERRORS if (archive_errors > 0 or pipeline_errors > 0) else import_state.TakeoutState.COMPLETED
+            unresolved_db_errors = state_mgr.get_unresolved_error_count(job_id)
+            final_status = import_state.TakeoutState.COMPLETED_WITH_ERRORS if (archive_errors > 0 or pipeline_errors > 0 or unresolved_db_errors > 0) else import_state.TakeoutState.COMPLETED
             state_mgr.update_job_status(job_id, final_status)
 
             self._on_log("=" * 60, "info")

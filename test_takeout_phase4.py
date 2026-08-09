@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 4.2 精準截圖引擎與 COMPLETED_WITH_ERRORS 續傳保護測試
-驗證真實 1080x2400 無關鍵字 PNG/JPG 截圖 (評分 >= 7)、line_album_ 照片 (評分 < 7)、Mock DateConflict/LowConfidenceDate 與 Sidecar 失敗後續傳保護
+Google Takeout ZIP 匯入引擎 Phase 4.3 終極測試與未解決錯誤歷程保護單元測試
+驗證 1080x2400 PNG/JPG 無關鍵字截圖 (評分 >= 7)、經 LINE 傳送的截圖 (評分 >= 7)、普通 4:3 LINE 照片 (評分 < 7)
+以及 COMPLETED_WITH_ERRORS 媒體完整性驗證與未解決錯誤歷程保護。
 """
 
 import os
@@ -62,14 +63,13 @@ class TestTakeoutPhase4(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_non_keyword_1080x2400_screenshot_scoring(self):
-        """驗證真實 1080x2400 無關鍵字截圖 (PNG 評分 8 分, JPG 評分 7 分) 正確劃入 Screenshots 隔離區"""
-        # 1. 建立真實 1080x2400 PNG 無 EXIF 圖片
-        png_path = os.path.join(self.dst_dir, "2026_07_23_304.png")
-        img_png = Image.new('RGB', (1080, 2400), color='white')
-        img_png.save(png_path, 'PNG')
-
+    def test_non_keyword_1080x2400_screenshot_and_line_photo_scoring(self):
+        """驗證 7 分制截圖評分：1080x2400 PNG/JPG 截圖及經 LINE 傳送的截圖隔離 (評分 >= 7)，與普通 4:3 LINE 相簿照片 (評分 < 7)"""
         date_parser = app_main.DateParser()
+
+        # 1. 建立真實 1080x2400 PNG 無 EXIF 截圖 ➔ 評分 = 8 >= 7
+        png_path = os.path.join(self.dst_dir, "2026_07_23_304.png")
+        Image.new('RGB', (1080, 2400), color='white').save(png_path, 'PNG')
         meta_png = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
             part_path=png_path, filename="2026_07_23_304.png", dst_root=self.dst_dir, date_parser=date_parser
         )
@@ -77,11 +77,9 @@ class TestTakeoutPhase4(unittest.TestCase):
         self.assertGreaterEqual(meta_png['screenshot_score'], 7)
         self.assertIn("Screenshots", meta_png['target_dir'])
 
-        # 2. 建立真實 1080x2400 JPG 無 EXIF 圖片
+        # 2. 建立真實 1080x2400 JPG 無 EXIF 截圖 ➔ 評分 = 7 >= 7
         jpg_path = os.path.join(self.dst_dir, "2026_07_23_304.jpg")
-        img_jpg = Image.new('RGB', (1080, 2400), color='white')
-        img_jpg.save(jpg_path, 'JPEG')
-
+        Image.new('RGB', (1080, 2400), color='white').save(jpg_path, 'JPEG')
         meta_jpg = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
             part_path=jpg_path, filename="2026_07_23_304.jpg", dst_root=self.dst_dir, date_parser=date_parser
         )
@@ -89,12 +87,23 @@ class TestTakeoutPhase4(unittest.TestCase):
         self.assertGreaterEqual(meta_jpg['screenshot_score'], 7)
         self.assertIn("Screenshots", meta_jpg['target_dir'])
 
-        # 3. 普通 LINE 相簿照片 line_album_20230520.jpg ➔ 評分小於 7 (不誤判為截圖)
-        meta_line = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
-            part_path=png_path, filename="line_album_20230520.jpg", dst_root=self.dst_dir, date_parser=date_parser
+        # 3. 經由 LINE 傳送的真實 1080x2400 截圖 ➔ 評分 = 8 >= 7 (成功隔離)
+        line_shot_path = os.path.join(self.dst_dir, "line_album_screenshot.png")
+        Image.new('RGB', (1080, 2400), color='white').save(line_shot_path, 'PNG')
+        meta_line_shot = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
+            part_path=line_shot_path, filename="line_album_screenshot.png", dst_root=self.dst_dir, date_parser=date_parser
         )
-        self.assertFalse(meta_line['is_screenshot'])
-        self.assertLess(meta_line['screenshot_score'], 7)
+        self.assertTrue(meta_line_shot['is_screenshot'])
+        self.assertGreaterEqual(meta_line_shot['screenshot_score'], 7)
+
+        # 4. 普通 4:3 (4000x3000) 相機拍攝 LINE 相簿照片 ➔ 評分 < 7 (不誤判為截圖)
+        camera_line_path = os.path.join(self.dst_dir, "line_album_camera.jpg")
+        Image.new('RGB', (4000, 3000), color='white').save(camera_line_path, 'JPEG')
+        meta_line_cam = media_metadata.MediaMetadataExtractor.resolve_media_date_and_destination(
+            part_path=camera_line_path, filename="line_album_20230520.jpg", dst_root=self.dst_dir, date_parser=date_parser
+        )
+        self.assertFalse(meta_line_cam['is_screenshot'])
+        self.assertLess(meta_line_cam['screenshot_score'], 7)
 
     def test_date_conflict_isolation_with_mock_parser(self):
         """驗證 DateConflict 分支：當 DateParser 回傳 conflict = True 時，目標目錄為 _Review/DateConflict"""
@@ -144,8 +153,8 @@ class TestTakeoutPhase4(unittest.TestCase):
         self.assertIsNotNone(err2)
         self.assertFalse(os.path.exists(json_final + ".part"))
 
-    def test_completed_with_errors_resumption_protection(self):
-        """驗證 COMPLETED_WITH_ERRORS 續傳保護：目的檔已存在時不被加入 pending_members 亦不降級"""
+    def test_completed_with_errors_resumption_and_unresolved_error_count(self):
+        """驗證 COMPLETED_WITH_ERRORS 續傳容量與 SHA-256 驗證、get_unresolved_error_count 與 error_msg 保護"""
         db_path = os.path.join(self.dst_dir, "_ImportTemp", "resumption_err.db")
         state_mgr = import_state.TakeoutStateManager(db_path)
         job_id = "job_err_001"
@@ -156,6 +165,8 @@ class TestTakeoutPhase4(unittest.TestCase):
         with open(media_dest, 'wb') as f:
             f.write(self.sample_photo_bytes)
 
+        real_sha = state_mgr._compute_sha256(media_dest)
+
         m = {
             "job_id": job_id, "archive_id": arc_id, "archive_fingerprint": "fp_err",
             "member_index": 0, "member_name": "photo.jpg", "normalized_path": "photo.jpg",
@@ -164,19 +175,26 @@ class TestTakeoutPhase4(unittest.TestCase):
             "status": import_state.TakeoutState.COMPLETED_WITH_ERRORS
         }
         mid = state_mgr.register_member(m)
-        state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, final_destination=media_dest, sha256="abc")
+        orig_err = "Sidecar 寫入失敗: 檔名碰撞"
+        state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, final_destination=media_dest, sha256=real_sha, error_msg=orig_err)
 
-        # 1. 驗證 recover_and_get_pending_members 排除媒體重新解壓
+        # 1. 驗證 get_unresolved_error_count 包含未解決的 COMPLETED_WITH_ERRORS 錯誤
+        self.assertEqual(state_mgr.get_unresolved_error_count(job_id), 1)
+
+        # 2. 驗證 recover_and_get_pending_members 在實體檔無損時排除媒體重複解壓
         pending = state_mgr.recover_and_get_pending_members(job_id)
         self.assertEqual(len(pending), 0)
 
-        # 2. 驗證 register_members_batch 重新掃描不會將 COMPLETED_WITH_ERRORS 降級
+        # 3. 驗證 register_members_batch 重新掃描保留原有的 error_msg 內容不被空值覆蓋
         m["status"] = import_state.TakeoutState.SECURITY_VALIDATED
+        m["reject_reason"] = None
         state_mgr.register_members_batch([m])
-        self.assertEqual(state_mgr.get_member(mid)['status'], import_state.TakeoutState.COMPLETED_WITH_ERRORS)
+        saved_m = state_mgr.get_member(mid)
+        self.assertEqual(saved_m['status'], import_state.TakeoutState.COMPLETED_WITH_ERRORS)
+        self.assertEqual(saved_m['error_msg'], orig_err)
 
-        # 3. 驗證 find_existing_sha256_dest 能查到 COMPLETED_WITH_ERRORS 的去重目的檔
-        dest_found = state_mgr.find_existing_sha256_dest("abc")
+        # 4. 驗證 find_existing_sha256_dest 全量查詢多筆候選能精準找到有效路徑
+        dest_found = state_mgr.find_existing_sha256_dest(real_sha)
         self.assertEqual(dest_found, media_dest)
 
 

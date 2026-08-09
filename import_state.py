@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v4.2 COMPLETED_WITH_ERRORS 續傳保護版)
-提供符合 ACID 的批次狀態推進、單向狀態保護、job_type 隔離、COMPLETED_WITH_ERRORS 去重與復原保護。
+Google Takeout ZIP 匯入引擎 - SQLite 交易狀態與崩潰恢復模組 (v4.3 Phase 4.3 錯誤歷程保護與完整性驗證版)
+提供符合 ACID 的批次狀態推進、單向狀態保護、job_type 隔離、COMPLETED_WITH_ERRORS 去重與復原驗證。
 """
 
 import os
@@ -144,7 +144,6 @@ class TakeoutStateManager:
         with self._get_conn() as conn:
             cursor = conn.cursor()
             
-            # 1. 檢查 archives 欄位
             cursor.execute("PRAGMA table_info(archives);")
             arc_cols = {row['name'] for row in cursor.fetchall()}
             if 'status' not in arc_cols:
@@ -152,7 +151,6 @@ class TakeoutStateManager:
             if 'error_msg' not in arc_cols:
                 conn.execute("ALTER TABLE archives ADD COLUMN error_msg TEXT;")
 
-            # 2. 清理重複資料前暫時關閉外鍵檢查，保護外鍵約束不拋出 IntegrityError
             conn.execute("PRAGMA foreign_keys = OFF;")
             try:
                 conn.execute("""
@@ -187,14 +185,10 @@ class TakeoutStateManager:
             finally:
                 conn.execute("PRAGMA foreign_keys = ON;")
 
-            # 3. 建立唯一索引以支援 ON CONFLICT (archive_id, member_index) 語法
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_members_archive_member ON members(archive_id, member_index);")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sidecar_unique ON sidecar_links(job_id, json_member_id);")
 
-            # 4. 外鍵完整性檢查
             conn.execute("PRAGMA foreign_key_check;")
-
-            # 5. 更新 user_version
             conn.execute(f"PRAGMA user_version = {self.CURRENT_SCHEMA_VERSION};")
 
     def create_job(self, job_id: str, job_type: str, src_dir: str, dst_dir: str) -> str:
@@ -207,9 +201,6 @@ class TakeoutStateManager:
         return job_id
 
     def find_resumable_job(self, src_dir: str, dst_dir: str, archive_fingerprints: List[str], job_type: str = JobType.IMPORT) -> Optional[str]:
-        """
-        尋找可續傳的歷史 Job（相同 src, dst, job_type 且封存檔指紋完全吻合，狀態非終止或包含 CANCELLED）
-        """
         if not archive_fingerprints:
             return None
 
@@ -282,7 +273,6 @@ class TakeoutStateManager:
             return dict(row) if row else None
 
     def get_job_archives(self, job_id: str) -> List[Dict[str, Any]]:
-        """全量讀取指定 Job ID 登記的所有封存檔紀錄 (包含僅存 Sidecar JSON 之 ZIP)"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM archives WHERE job_id = ?", (job_id,))
@@ -290,8 +280,8 @@ class TakeoutStateManager:
 
     def register_members_batch(self, members_data: List[Dict[str, Any]]):
         """
-        採用單向狀態推進 UPSERT (Prevent Status Downgrade)：
-        包含 COMPLETED 與 COMPLETED_WITH_ERRORS，重新掃描時保護該狀態不被降級。
+        採用單向狀態推進 UPSERT (Prevent Status Downgrade & Preserve error_msg)：
+        受保護狀態不被降級，且若為受保護狀態保留原有的 error_msg 內容。
         """
         if not members_data:
             return
@@ -329,7 +319,11 @@ class TakeoutStateManager:
                     THEN members.status
                     ELSE excluded.status
                 END,
-                error_msg = excluded.error_msg,
+                error_msg = CASE
+                    WHEN members.status IN ('VERIFIED', 'METADATA_PARSED', 'DESTINATION_RESERVED', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'DUPLICATE_SKIPPED', 'PREVIEW_ANALYZED')
+                    THEN members.error_msg
+                    ELSE excluded.error_msg
+                END,
                 updated_at = excluded.updated_at
             """, rows)
 
@@ -348,7 +342,6 @@ class TakeoutStateManager:
         self.update_members_status_batch([member_id], status, **kwargs)
 
     def update_members_status_batch(self, member_ids: List[int], status: str, **kwargs):
-        """高效能單一交易批次更新狀態"""
         if not member_ids:
             return
         now = datetime.datetime.now().isoformat()
@@ -374,7 +367,6 @@ class TakeoutStateManager:
             return dict(row) if row else None
 
     def get_sidecar_for_media(self, media_member_id: int) -> Optional[Dict[str, Any]]:
-        """讀取與指定媒體配對的 Sidecar JSON 成員資料"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -394,8 +386,19 @@ class TakeoutStateManager:
             cursor.execute("SELECT * FROM members WHERE job_id = ? AND status = ?", (job_id, status))
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_unresolved_error_count(self, job_id: str) -> int:
+        """全量查詢 SQLite 取得指定 Job 中狀態為 FAILED, RECOVERY_CONFLICT 或 COMPLETED_WITH_ERRORS 的未解決錯誤總數"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) as cnt FROM members WHERE job_id = ? AND status IN (?, ?, ?)",
+                (job_id, TakeoutState.FAILED, TakeoutState.RECOVERY_CONFLICT, TakeoutState.COMPLETED_WITH_ERRORS)
+            )
+            row = cursor.fetchone()
+            return row['cnt'] if row else 0
+
     def find_existing_sha256_dest(self, sha256_hash: str) -> Optional[str]:
-        """全域去重查詢：搜尋 SQLite 中已有相同 SHA-256 的已完成媒體目的路徑 (包含 COMPLETED 與 COMPLETED_WITH_ERRORS)"""
+        """全量逐筆檢查去重查詢：搜尋 SQLite 中已有相同 SHA-256 的已完成媒體目的路徑，確認檔案真實存在後回傳"""
         if not sha256_hash:
             return None
         with self._get_conn() as conn:
@@ -404,17 +407,14 @@ class TakeoutStateManager:
                 "SELECT final_destination FROM members WHERE sha256 = ? AND status IN (?, ?) AND final_destination IS NOT NULL",
                 (sha256_hash, TakeoutState.COMPLETED, TakeoutState.COMPLETED_WITH_ERRORS)
             )
-            row = cursor.fetchone()
-            if row and row['final_destination'] and os.path.isfile(row['final_destination']):
-                return row['final_destination']
+            rows = cursor.fetchall()
+            for row in rows:
+                dest = row['final_destination']
+                if dest and os.path.isfile(dest):
+                    return dest
         return None
 
     def _is_safe_part_path(self, job_id: str, part_path: str) -> bool:
-        """
-        嚴格邊界檢查 (使用 os.path.commonpath)
-        part_path 必須位於特定 job 的暫存目錄 `<dst>\_ImportTemp\<job_id>\` 內部，
-        副檔名必須為 .part，且非符號連結。
-        """
         if not part_path or os.path.islink(part_path):
             return False
 
@@ -444,9 +444,7 @@ class TakeoutStateManager:
 
     def recover_and_get_pending_members(self, job_id: str) -> List[Dict[str, Any]]:
         """
-        Phase 2/Phase 3/Phase 4 崩潰恢復與續傳引擎 (Crash Recovery Engine - 包含 COMPLETED_WITH_ERRORS 續傳防護)
-        已排除 COMPLETED, COMPLETED_WITH_ERRORS (目的檔已存在時), PREVIEW_ANALYZED, SECURITY_REJECTED, DUPLICATE_SKIPPED, RECOVERY_CONFLICT
-        針對 CANCELLED 狀態的成員自動將其復原為 SECURITY_VALIDATED。
+        Phase 4.3 崩潰恢復與續傳引擎 (含有效容量與 SHA-256 驗證之 COMPLETED_WITH_ERRORS 續傳防護)
         """
         with self._get_conn() as conn:
             cursor = conn.cursor()
@@ -478,10 +476,16 @@ class TakeoutStateManager:
             part_exists = is_part_safe and os.path.isfile(part_p)
             dest_exists = dest_p is not None and os.path.isfile(dest_p) and not os.path.islink(dest_p)
 
-            # COMPLETED_WITH_ERRORS 處置：若媒體實體檔案已歸檔成功，直接保護排除，不重新解壓
+            # COMPLETED_WITH_ERRORS 處置：核對目的媒體檔案之容量與 SHA-256，確認無損才跳過媒體解壓
             if status == TakeoutState.COMPLETED_WITH_ERRORS:
                 if dest_exists:
-                    continue
+                    try:
+                        st = os.stat(dest_p)
+                        if st.st_size == m['uncompressed_size']:
+                            if not m['sha256'] or self._compute_sha256(dest_p) == m['sha256']:
+                                continue
+                    except OSError:
+                        pass
 
             # CANCELLED 狀態復原
             if status == TakeoutState.CANCELLED:
