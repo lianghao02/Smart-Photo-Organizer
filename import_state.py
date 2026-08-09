@@ -132,12 +132,43 @@ class TakeoutStateManager:
             );
             """)
 
+            # v3.0 MediaGroup 權威資料表
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS media_groups (
+                group_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                primary_member_id INTEGER,
+                source_type TEXT NOT NULL,
+                capture_date TEXT,
+                date_source TEXT,
+                date_confidence INTEGER,
+                status TEXT NOT NULL DEFAULT 'DISCOVERED',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+            );
+            """)
+
+            # v3.0 MediaGroup 成員關聯表
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS media_group_members (
+                group_member_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id TEXT NOT NULL,
+                member_id INTEGER,
+                source_key TEXT NOT NULL,
+                role TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (group_id) REFERENCES media_groups(group_id)
+            );
+            """)
+
             # 常用查詢索引
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_normalized_path ON members(normalized_path);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_crc_size ON members(member_crc, uncompressed_size);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_filename ON members(filename);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_members_job_status ON members(job_id, status);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_archives_fingerprint ON archives(fingerprint);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_media_groups_job ON media_groups(job_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_mg_members_group ON media_group_members(group_id);")
 
     def _migrate_db(self):
         with self._get_conn() as conn:
@@ -544,3 +575,68 @@ class TakeoutStateManager:
                 pending_members.append(m)
 
         return pending_members
+
+    def create_media_group_record(
+        self,
+        group_id: str,
+        job_id: str,
+        primary_member_id: Optional[int],
+        source_type: str,
+        capture_date: Optional[str] = None,
+        date_source: Optional[str] = None,
+        date_confidence: Optional[int] = None,
+        status: str = "DISCOVERED",
+        members: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """建立 MediaGroup 及其成員關聯紀錄"""
+        now = datetime.datetime.utcnow().isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO media_groups (
+                    group_id, job_id, primary_member_id, source_type,
+                    capture_date, date_source, date_confidence, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (group_id, job_id, primary_member_id, source_type, capture_date, date_source, date_confidence, status, now)
+            )
+
+            if members:
+                for m in members:
+                    conn.execute(
+                        """
+                        INSERT INTO media_group_members (
+                            group_id, member_id, source_key, role, created_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (group_id, m.get("member_id"), m.get("source_key", ""), m.get("role", "AUXILIARY"), now)
+                    )
+        return group_id
+
+    def get_media_group_record(self, group_id: str) -> Optional[Dict[str, Any]]:
+        """取得單一 MediaGroup 紀錄及其所有成員列舉"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM media_groups WHERE group_id = ?", (group_id,))
+            g_row = cursor.fetchone()
+            if not g_row:
+                return None
+            group = dict(g_row)
+
+            cursor.execute("SELECT * FROM media_group_members WHERE group_id = ?", (group_id,))
+            group["members"] = [dict(r) for r in cursor.fetchall()]
+            return group
+
+    def list_media_groups_for_job(self, job_id: str) -> List[Dict[str, Any]]:
+        """列出指定 job_id 下的所有 MediaGroup"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT group_id FROM media_groups WHERE job_id = ?", (job_id,))
+            g_ids = [r["group_id"] for r in cursor.fetchall()]
+
+        groups = []
+        for gid in g_ids:
+            g = self.get_media_group_record(gid)
+            if g:
+                groups.append(g)
+        return groups
