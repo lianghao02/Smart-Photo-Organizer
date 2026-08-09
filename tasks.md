@@ -1,31 +1,31 @@
-# Current Task：v3.0 Phase 6 — 短影片與 Live Photo 排除
+# Current Task：v3.0 Phase 7 相似照片
 
-## 前置基線
+## 基線
 
-- Phase 5 簽收 Commit：`b6cf133`
-- Phase 5 簽收測試：全專案 99 項中 98 通過、1 項因 Windows Symlink 權限明確略過
+- Phase 6 簽收 Commit：`1905453`
+- 來源唯讀、MediaGroup 不拆散、ReviewEntry 為權威紀錄。
 
 ## 目標
 
-以唯讀 ffprobe 取得影片長度，將大於 0 且小於或等於 5 秒的獨立影片登記至 `_Review/05_短影片`；任何 `LIVE_PHOTO_VIDEO` 必須在探測長度前排除。
+建立不會對整個媒體庫執行 O(n²) 的相似照片候選分析，命中後只建立
+`_Review/02_相似照片` 捷徑，供使用者人工比較。
 
 ## 必要功能
 
-1. ffprobe 採參數陣列呼叫、不使用 Shell、不修改或重新編碼影片。
-2. 容器 `format.duration` 優先；缺少時採有效串流中最長 duration。
-3. `0 < duration <= 5.0` 才建立 ReviewEntry；5.001 秒不得列入。
-4. `MediaAnalysisTarget` 必須保留 MediaGroup 是否含 `LIVE_PHOTO_VIDEO` 的權威角色資訊。
-5. Live Photo 影片在呼叫 ffprobe 前直接排除，不以檔名或長度猜測。
-6. ffprobe 不存在、逾時、回傳錯誤或沒有 duration 時只記錄警告，不把未知長度當成短影片。
-7. 命中後只建立 ReviewEntry／捷徑，來源影片保持原狀。
+1. 僅分析具可解析拍攝時間的照片；影片與日期未知照片不進入本階段。
+2. 先以 15 分鐘時間窗、影像方向與長寬比縮小候選。
+3. 採 Pillow 計算 64 位元 dHash，利用 8 個 8-bit 分段索引產生候選。
+4. dHash 漢明距離門檻為 7；候選仍須通過實際時間與尺寸比例檢查。
+5. 完整 SHA-256 相同者交由 `01_重複照片`，不得重複列入相似分類。
+6. 同一相似群組的所有照片都建立捷徑，原因須包含穩定群組 ID 與距離。
+7. 分析期間檔案狀態改變時停止採用該結果，來源檔案保持原狀。
 
 ## 驗收結果
 
-- [x] 新增 `VideoDurationProbe`，支援容器與串流 duration。
-- [x] 5.0 秒列入、5.001 秒排除測試通過。
-- [x] `LIVE_PHOTO_VIDEO` 在 probe 前排除測試通過。
-- [x] ffprobe 失敗降級警告測試通過。
-- [x] 來源影片不搬移、不刪除測試通過。
-- [x] Phase 6 新增測試 5/5 通過。
-- [x] 全專案 104 項測試中 103 通過、1 項因 Windows 權限明確略過，語法載入與 `git diff --check` 通過。
-- [x] Codex 自我複查完成，待提交 Phase 6 簽收 Commit。
+- [x] 時間窗內的相似照片建立兩筆 `SIMILAR` ReviewEntry。
+- [x] 超出時間窗、方向或尺寸不相容的照片不誤判。
+- [x] 完全相同檔案不重複列入相似分類。
+- [x] 60 張測試素材的實際比較量低於全庫兩兩比較的十分之一。
+- [x] Phase 7 新增測試 5/5 通過。
+- [x] 全專案 109 項測試中 108 通過、1 項因 Windows 權限明確略過；語法與 `git diff --check` 通過。
+- [x] Codex 自我複查完成，待提交 Phase 7 簽收 Commit。

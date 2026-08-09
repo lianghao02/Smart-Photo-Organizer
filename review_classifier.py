@@ -16,6 +16,7 @@ from media_group import GroupRole, MediaGroup
 from media_metadata import MediaMetadataExtractor
 from media_types import EXT_MEDIA, EXT_PHOTOS
 from review_workspace import ReviewEntry, ReviewWorkspaceManager
+from similarity import SimilarPhotoDetector, SimilarityCandidate
 
 
 HASH_BLOCK_SIZE = 4 * 1024
@@ -36,6 +37,7 @@ class MediaAnalysisTarget:
     cache_path: Optional[str] = None
     original_filename: Optional[str] = None
     contains_live_photo_video: bool = False
+    capture_date: Optional[str] = None
 
     @classmethod
     def from_media_group(
@@ -85,6 +87,7 @@ class MediaAnalysisTarget:
                 member.role == GroupRole.LIVE_PHOTO_VIDEO
                 for member in group.members
             ),
+            capture_date=group.capture_date,
         )
 
     def all_media_paths(self) -> Tuple[str, ...]:
@@ -105,6 +108,7 @@ class ClassificationResult:
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     analyzed_group_count: int = 0
+    similarity_comparison_count: int = 0
 
     @property
     def category_counts(self) -> Dict[str, int]:
@@ -358,9 +362,11 @@ class ReviewClassifier:
         duplicate_detector: Optional[ExactDuplicateDetector] = None,
         blur_detector=OpenCVBlurDetector,
         duration_probe: Optional[VideoDurationProbe] = None,
+        similarity_detector: Optional[SimilarPhotoDetector] = None,
         screenshot_enabled: bool = True,
         blur_enabled: bool = True,
         short_video_enabled: bool = True,
+        similar_enabled: bool = True,
         screenshot_threshold: int = SCREENSHOT_SCORE_THRESHOLD,
         blur_threshold: float = DEFAULT_BLUR_THRESHOLD,
         short_video_max_seconds: float = SHORT_VIDEO_MAX_SECONDS,
@@ -369,9 +375,11 @@ class ReviewClassifier:
         self.duplicate_detector = duplicate_detector or ExactDuplicateDetector()
         self.blur_detector = blur_detector
         self.duration_probe = duration_probe or VideoDurationProbe()
+        self.similarity_detector = similarity_detector or SimilarPhotoDetector()
         self.screenshot_enabled = screenshot_enabled
         self.blur_enabled = blur_enabled
         self.short_video_enabled = short_video_enabled
+        self.similar_enabled = similar_enabled
         self.screenshot_threshold = screenshot_threshold
         self.blur_threshold = blur_threshold
         self.short_video_max_seconds = max(0.0, float(short_video_max_seconds))
@@ -398,6 +406,29 @@ class ReviewClassifier:
         duplicates, duplicate_errors = self.duplicate_detector.find_duplicates(unique_targets)
         result.errors.extend(duplicate_errors)
 
+        similar_findings = {}
+        if self.similar_enabled:
+            similarity_candidates = [
+                SimilarityCandidate(
+                    group_id=target.group_id,
+                    path=target.primary_path,
+                    capture_date=target.capture_date,
+                )
+                for target in unique_targets
+                if target.capture_date
+                and os.path.splitext(
+                    target.original_filename or target.primary_path
+                )[1].lower() in EXT_PHOTOS
+            ]
+            if len(similarity_candidates) >= 2:
+                similarity_result = self.similarity_detector.find_similar(
+                    similarity_candidates
+                )
+                similar_findings = similarity_result.findings
+                result.errors.extend(similarity_result.errors)
+                result.warnings.extend(similarity_result.warnings)
+                result.similarity_comparison_count = similarity_result.comparison_count
+
         blur_unavailable_reported = False
         for target in unique_targets:
             primary_path = os.path.abspath(target.primary_path)
@@ -423,6 +454,27 @@ class ReviewClassifier:
                     result.entries.append(entry)
                 except Exception as exc:
                     result.errors.append(f"{target.group_id}: 重複審核登記失敗 ({exc})")
+
+            if target.group_id in similar_findings:
+                finding = similar_findings[target.group_id]
+                try:
+                    entry = self.workspace.register_review(
+                        job_id,
+                        target.group_id,
+                        "SIMILAR",
+                        primary_path,
+                        score=finding.score,
+                        reason=(
+                            f"相似群組 {finding.cluster_id}；"
+                            f"參考群組 {finding.reference_group_id}；"
+                            f"dHash 距離 {finding.hamming_distance}"
+                        ),
+                        cache_path=target.cache_path,
+                        display_filename=display_filename,
+                    )
+                    result.entries.append(entry)
+                except Exception as exc:
+                    result.errors.append(f"{target.group_id}: 相似審核登記失敗 ({exc})")
 
             if self.screenshot_enabled and extension in EXT_PHOTOS:
                 score, reasons = MediaMetadataExtractor.calculate_screenshot_score(
