@@ -31,6 +31,16 @@ class TakeoutZipScanner:
     MAX_ZIP_COUNT = 500                    # 500 ZIP 檔上限
     CHUNK_SIZE = 64 * 1024                 # 64 KB 串流區塊
 
+    # 支援的媒體與照片副檔名集合 (統一格式來源)
+    EXT_PHOTOS = {
+        '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.raw', '.arw', '.cr2', '.nef',
+        '.cr3', '.dng', '.orf', '.rw2', '.pef', '.sr2'
+    }
+    EXT_VIDEOS = {
+        '.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.3gp', '.m4v'
+    }
+    EXT_MEDIA = EXT_PHOTOS | EXT_VIDEOS
+
     # 支援的解壓方法
     SUPPORTED_COMPRESS_TYPES = {
         zipfile.ZIP_STORED,
@@ -130,10 +140,7 @@ class TakeoutZipScanner:
                     "is_safe": is_safe,
                     "reject_reason": reason,
                     "is_json": ext == '.json',
-                    "is_media": ext in (
-                        '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.raw', '.arw', '.cr2', '.nef',
-                        '.mp4', '.mov', '.avi', '.mkv', '.wmv', '.m4v', '.3gp'
-                    )
+                    "is_media": ext in cls.EXT_MEDIA
                 }
                 members.append(member_item)
 

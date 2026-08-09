@@ -2082,6 +2082,7 @@ class WebBridge:
         self._logger     = Logger.get_instance()
         self._processor: Any = None
         self._window: Any = None
+        self._stop_event = threading.Event()
         self._tray_manager = SystemTrayManager(self)
         
         self._log_queue = []
