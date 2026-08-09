@@ -58,6 +58,81 @@ class SidecarMatcher:
         return False
 
     @classmethod
+    def find_sidecars_for_media(cls, media: SourceItem, candidate_items: List[SourceItem]) -> List[SidecarMatch]:
+        """
+        為單一媒體在同目錄的候選 JSON 中尋找所有合法的 Sidecar (支援同媒體跟隨全檔名與裸 stem 複數 Sidecar)。
+        供 Processor._get_sidecar_pairs() 實際調用，共用同套配對規則與優先序。
+        """
+        matches: List[SidecarMatch] = []
+        if not media.is_media or not candidate_items:
+            return matches
+
+        log_p = media.logical_path.lower()
+        log_dir = os.path.dirname(log_p)
+        media_stem = os.path.splitext(log_p)[0]
+        fn_lower = media.filename.lower()
+        fn_stem = os.path.splitext(fn_lower)[0]
+
+        json_cands = [j for j in candidate_items if j.is_json and j.is_safe]
+        matched_json_keys: Set[str] = set()
+
+        # 1. 全檔名 P1
+        p1_key = log_p + ".json"
+        for j in json_cands:
+            if j.logical_path.lower() == p1_key or j.filename.lower() == (fn_lower + ".json"):
+                matched_json_keys.add(j.source_key)
+                matches.append(SidecarMatch(media, j, "EXACT_FULL_PATH", "全檔名精準配對"))
+
+        # 2. Supplemental Metadata P2
+        p2_suffixes = [".supplemental-metadata.json", ".supplemental-metada.json", ".supplemental-meta.json", ".supplemental.json"]
+        for j in json_cands:
+            if j.source_key in matched_json_keys:
+                continue
+            j_log = j.logical_path.lower()
+            if any(j_log == (log_p + suf) for suf in p2_suffixes) or any(j.filename.lower() == (fn_lower + suf) for suf in p2_suffixes):
+                matched_json_keys.add(j.source_key)
+                matches.append(SidecarMatch(media, j, "EXACT_FULL_PATH_SUPPLEMENTAL", "Supplemental Metadata 配對"))
+
+        # 3. 裸 stem P3 (需要檢查同目錄是否有相片檔保護 Live Photo 影片)
+        has_sibling_photo = False
+        if media.extension in EXT_VIDEOS:
+            for item in candidate_items:
+                if item != media and item.is_media and item.extension in EXT_PHOTOS:
+                    if os.path.splitext(item.logical_path.lower())[0] == media_stem:
+                        has_sibling_photo = True
+                        break
+
+        if not has_sibling_photo:
+            p3_key = media_stem + ".json"
+            for j in json_cands:
+                if j.source_key in matched_json_keys:
+                    continue
+                j_log = j.logical_path.lower()
+                stem_parsed, _ = cls._extract_json_stem(j_log)
+                if j_log == p3_key or j.filename.lower() == (fn_stem + ".json") or stem_parsed.lower() == media_stem:
+                    matched_json_keys.add(j.source_key)
+                    matches.append(SidecarMatch(media, j, "BASE_STEM", "裸 stem 配對"))
+
+        # 4. Takeout 重複編號變體 P4
+        m_num = re.search(r'^(.*?)(\(\d+\))$', fn_stem)
+        if m_num:
+            raw_base, num_part = m_num.group(1), m_num.group(2)
+            p4_cands = [
+                f"{raw_base}{media.extension}{num_part}.json",
+                f"{fn_stem}{media.extension}.json",
+                f"{fn_stem}.json"
+            ]
+            for j in json_cands:
+                if j.source_key in matched_json_keys:
+                    continue
+                j_fn = j.filename.lower()
+                if any(j_fn == cand.lower() for cand in p4_cands):
+                    matched_json_keys.add(j.source_key)
+                    matches.append(SidecarMatch(media, j, "NUMBERED_VARIANT", "Google Takeout 重複編號變體配對"))
+
+        return matches
+
+    @classmethod
     def match_sources(cls, items: List[SourceItem]) -> MatchOutcome:
         """
         對輸入的 SourceItem 列表進行全域階段式 (Phase-by-Phase) 優先序 Sidecar 配對。
@@ -88,6 +163,16 @@ class SidecarMatcher:
                 json_items.append(item)
             elif item.is_media:
                 media_items.append(item)
+
+        # 預先建立同目錄相片 stem 快速查詢集合 (完全消除 Phase 3 的 O(n²) 媒體×媒體重複掃描)
+        photo_stems_by_dir: Dict[str, Set[str]] = {}
+        for m in media_items:
+            if m.extension in EXT_PHOTOS:
+                d = os.path.dirname(m.logical_path.lower())
+                s = os.path.splitext(m.logical_path.lower())[0]
+                if d not in photo_stems_by_dir:
+                    photo_stems_by_dir[d] = set()
+                photo_stems_by_dir[d].add(s)
 
         # 建立快速尋找對照表
         json_by_logical_path: Dict[str, List[SourceItem]] = {}
@@ -190,7 +275,7 @@ class SidecarMatcher:
         active_media = next_active
 
         # -------------------------------------------------------------
-        # Phase 3 (P3): 同封存檔/同目錄、裸 stem + .json
+        # Phase 3 (P3): 同封存檔/同目錄、裸 stem + .json (O(1) 集合尋找)
         # -------------------------------------------------------------
         next_active = []
         for media in active_media:
@@ -204,15 +289,9 @@ class SidecarMatcher:
                 unique_cands = {c.source_key: c for c in raw_cands if cls.is_same_archive(media, c)}
                 valid_cands = get_unassigned(list(unique_cands.values()))
 
-                # Live Photo 保護：若是影片且同目錄有相片存在，不搶奪裸 stem.json
+                # Live Photo 保護：若是影片且同目錄有相片檔 stem 存在，O(1) 精準跳過不搶奪裸 stem.json
                 if media.extension in EXT_VIDEOS:
-                    has_sibling_photo = any(
-                        m != media and os.path.dirname(m.logical_path.lower()) == log_dir
-                        and os.path.splitext(m.logical_path.lower())[0] == media_stem
-                        and m.extension in EXT_PHOTOS
-                        for m in media_items
-                    )
-                    if has_sibling_photo:
+                    if media_stem in photo_stems_by_dir.get(log_dir, set()):
                         valid_cands = []
 
                 if len(valid_cands) == 1:

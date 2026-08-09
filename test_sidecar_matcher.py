@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 Smart-Photo-Organizer v3.0 Phase 1 - SidecarMatcher 單元測試 (test_sidecar_matcher.py)
-驗證精準配對、裸 stem、Supplemental Metadata (含截斷)、Takeout 編號變體、大小寫相容、跨 ZIP 配對、JSON 獨佔指派、AMBIGUOUS 歧義性與跨目錄備用配對。
+驗證精準配對、裸 stem、Supplemental Metadata (含截斷)、Takeout 編號變體、大小寫相容、跨 ZIP 配對、JSON 獨佔指派、AMBIGUOUS 歧義性與 Processor 整合一致性。
 """
 
 import os
 import sys
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,6 +15,7 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+import main as app_main
 from source_index import SourceItem
 from sidecar_matcher import SidecarMatcher, SidecarMatch, MatchOutcome
 
@@ -121,7 +124,7 @@ class TestSidecarMatcher(unittest.TestCase):
         self.assertEqual(outcome.matched_pairs[0].match_quality, "FILENAME_MATCH")
 
     def test_global_priority_phase_order_prevents_p6_stealing_p1(self):
-        """驗證全域階段式優先序：高優先序 (P1) 跨全任務優先於低優先序 (P6) 搶奪」"""
+        """驗證全域階段式優先序：高優先序 (P1) 跨全任務優先於低優先序 (P6) 搶奪"""
         mediaA = SourceItem("mA", "FOLDER", "FolderA/img.jpg", "img.jpg", ".jpg", 100, is_media=True, is_json=False)
         mediaB = SourceItem("mB", "FOLDER", "FolderB/img.jpg", "img.jpg", ".jpg", 100, is_media=True, is_json=False)
 
@@ -144,6 +147,59 @@ class TestSidecarMatcher(unittest.TestCase):
 
         self.assertEqual(res_f.matched_pairs[0].match_quality, res_z.matched_pairs[0].match_quality)
         self.assertEqual(res_f.matched_pairs[0].match_quality, "EXACT_FULL_PATH")
+
+
+class TestProcessorSidecarIntegration(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.src_dir = os.path.join(self.test_dir, "src")
+        self.dst_dir = os.path.join(self.test_dir, "dst")
+        os.makedirs(self.src_dir, exist_ok=True)
+        os.makedirs(self.dst_dir, exist_ok=True)
+        self.processor = app_main.Processor({'mode': 'copy', 'sidecar_enabled': True}, None)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_processor_and_sidecar_matcher_consistency(self):
+        """證明 Processor._get_sidecar_pairs 與 SidecarMatcher 對截斷 Supplemental Metadata、大小寫及複數 Sidecar 產生一致結果"""
+        # 1. 截斷 Supplemental Metadata 案例
+        img_p = os.path.join(self.src_dir, "vacation.png")
+        json_supp = os.path.join(self.src_dir, "vacation.png.supplemental-metada.json")
+        with open(img_p, 'wb') as f: f.write(b"png bytes")
+        with open(json_supp, 'wb') as f: f.write(b"json bytes")
+
+        dst_img = os.path.join(self.dst_dir, "2018/vacation.png")
+        pairs = self.processor._get_sidecar_pairs(img_p, dst_img)
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0][0], json_supp)
+        self.assertTrue(pairs[0][1].endswith(".supplemental-metadata.json"))
+
+        # 2. 大小寫相容案例
+        img_case = os.path.join(self.src_dir, "PHOTO.JPG")
+        json_case = os.path.join(self.src_dir, "photo.jpg.json")
+        with open(img_case, 'wb') as f: f.write(b"jpg bytes")
+        with open(json_case, 'wb') as f: f.write(b"json bytes")
+
+        dst_case = os.path.join(self.dst_dir, "2018/PHOTO.JPG")
+        pairs_case = self.processor._get_sidecar_pairs(img_case, dst_case)
+        self.assertEqual(len(pairs_case), 1)
+        self.assertEqual(pairs_case[0][0], json_case)
+
+        # 3. 複數 Sidecar (全檔名 + 裸 stem) 完整跟隨案例
+        img_multi = os.path.join(self.src_dir, "multi.jpg")
+        json_full = os.path.join(self.src_dir, "multi.jpg.json")
+        json_stem = os.path.join(self.src_dir, "multi.json")
+        with open(img_multi, 'wb') as f: f.write(b"jpg bytes")
+        with open(json_full, 'wb') as f: f.write(b"json full")
+        with open(json_stem, 'wb') as f: f.write(b"json stem")
+
+        dst_multi = os.path.join(self.dst_dir, "2018/multi.jpg")
+        pairs_multi = self.processor._get_sidecar_pairs(img_multi, dst_multi)
+        self.assertEqual(len(pairs_multi), 2)
+        pair_srcs = [p[0] for p in pairs_multi]
+        self.assertIn(json_full, pair_srcs)
+        self.assertIn(json_stem, pair_srcs)
 
 
 if __name__ == '__main__':
