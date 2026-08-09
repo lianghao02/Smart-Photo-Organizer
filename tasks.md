@@ -88,21 +88,21 @@
 
 至少覆蓋：
 
-- [ ] 一般資料夾唯讀索引、中文路徑及管理目錄排除。
-- [ ] 一般資料夾不跟隨 Symlink／Junction；無法在測試環境建立時須明確 skip。
-- [ ] Takeout ZIP 中央目錄索引不解壓媒體。
-- [ ] `photo.jpg.json` 精準配對。
-- [ ] `photo.json` 裸 stem 配對。
-- [ ] Supplemental Metadata 正常與截斷變體配對。
-- [ ] `photo(1).jpg` ↔ `photo.jpg(1).json` 編號變體配對。
-- [ ] 大小寫不同仍能配對，輸出保留原始名稱。
-- [ ] 跨 ZIP 相同邏輯路徑配對。
-- [ ] 單一 JSON 不會配給多個媒體。
-- [ ] 同優先序多候選輸出 `AMBIGUOUS`，結果不依輸入順序改變。
-- [ ] 跨資料夾檔名回退只有唯一候選時成功。
-- [ ] 一般資料夾與 ZIP 對等案例產生相同配對品質。
-- [ ] `TakeoutIndexer` 舊盤點數量、SQLite 關聯與狀態保護不 Regression。
-- [ ] `Processor._get_sidecar_pairs()` 的 Copy／Move／DRY_RUN 既有行為不 Regression。
+- [x] 一般資料夾唯讀索引、中文路徑及管理目錄排除。
+- [x] 一般資料夾不跟隨 Symlink／Junction；無法在測試環境建立時須明確 skip。
+- [x] Takeout ZIP 中央目錄索引不解壓媒體。
+- [x] `photo.jpg.json` 精準配對。
+- [x] `photo.json` 裸 stem 配對。
+- [x] Supplemental Metadata 正常與截斷變體配對。
+- [x] `photo(1).jpg` ↔ `photo.jpg(1).json` 編號變體配對。
+- [x] 大小寫不同仍能配對，輸出保留原始名稱。
+- [x] 跨 ZIP 相同邏輯路徑配對。
+- [x] 單一 JSON 不會配給多個媒體。
+- [x] 同優先序多候選輸出 `AMBIGUOUS`，結果不依輸入順序改變。
+- [x] 跨資料夾檔名回退只有唯一候選時成功。
+- [x] 一般資料夾與 ZIP 對等案例產生相同配對品質。
+- [x] `TakeoutIndexer` 舊盤點數量、SQLite 關聯與狀態保護不 Regression。
+- [x] `Processor._get_sidecar_pairs()` 的 Copy／Move／DRY_RUN 既有行為不 Regression。
 
 ## 不在本次範圍
 
@@ -116,12 +116,12 @@
 
 ## 驗收條件
 
-- [ ] `python -m py_compile` 可編譯所有產品與測試模組。
-- [ ] `python -c "import main, source_index, sidecar_matcher"` 成功。
-- [ ] Phase 0 既有 41 項測試全部通過。
-- [ ] Phase 1 新測試全部通過，且測試名稱與實際覆蓋行為一致。
-- [ ] `git diff --check` 無錯誤。
-- [ ] Git 差異只包含 Phase 1 必要模組、整合、測試與相關文件。
-- [ ] 無媒體被解壓、搬移、刪除或改名的 Phase 1 測試證據。
-- [ ] Antigravity 提交後由 Codex 執行一次獨立複查；小型測試／文件問題由 Codex 直接收尾，不再重複退回。
+- [x] `python -m py_compile` 可編譯所有產品與測試模組。
+- [x] `python -c "import main, source_index, sidecar_matcher"` 成功。
+- [x] Phase 0 既有 41 項測試全部通過。
+- [x] Phase 1 新測試全部通過，且測試名稱與實際覆蓋行為一致。
+- [x] `git diff --check` 無錯誤。
+- [x] Git 差異只包含 Phase 1 必要模組、整合、測試與相關文件。
+- [x] 無媒體被解壓、搬移、刪除或改名的 Phase 1 測試證據。
+- [x] Antigravity 提交後由 Codex 執行一次獨立複查；小型測試／文件問題由 Codex 直接收尾，不再重複退回。
 

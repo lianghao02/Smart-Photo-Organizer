@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 跨 ZIP 媒體與 Sidecar JSON 索引配對模組 (v3.1 單向狀態保護版)
-修復 Tuple 匯入缺失、截斷 supplemental metadata、全型/裸 stem 檢索、JSON 獨佔指派與保護既有 VERIFIED 狀態。
+Google Takeout ZIP 匯入引擎 - 跨 ZIP 媒體與 Sidecar JSON 索引配對模組 (v3.2 呼叫 SidecarMatcher 版)
+包裝 SidecarMatcher 配對引擎，保留既有 TakeoutIndexer API、SQLite sidecar_links 寫入、單向狀態保護與盤點報告契約。
 """
 
 import os
 import re
 from typing import List, Dict, Any, Set, Tuple, Optional
 from import_state import TakeoutStateManager, TakeoutState
+from source_index import SourceItem
+from sidecar_matcher import SidecarMatcher
 
 
 class TakeoutIndexer:
@@ -16,40 +18,26 @@ class TakeoutIndexer:
 
     @staticmethod
     def _extract_json_stem(norm_p: str) -> Tuple[str, str]:
-        """
-        從 JSON 的 normalized_path 中解析出相對應的媒體 stem 與全名
-        支援 .json 以及截斷的 .supplemental-metadata.json 變體 (例如 .supplemental-metada.json)
-        """
-        lower_p = norm_p.lower()
-        m = re.search(r'\.supplemental[^/]*\.json$', lower_p)
-        if m:
-            stem = norm_p[:m.start()]
-        elif lower_p.endswith('.json'):
-            stem = norm_p[:-5]
-        else:
-            stem = norm_p
-        return stem, os.path.basename(stem)
+        """相容靜態方法：從 JSON 的 normalized_path 中解析出相對應的媒體 stem 與全名"""
+        return SidecarMatcher._extract_json_stem(norm_p)
 
     def build_cross_zip_index(self, job_id: str) -> Dict[str, Any]:
         """
-        掃描 SQLite 中指定 job_id 的所有成員，建立 Sidecar JSON 配對
+        掃描 SQLite 中指定 job_id 的所有成員，經由 SidecarMatcher 建立 Sidecar JSON 配對
         回傳「ZIP 快速盤點報告」數據結構
         """
-        # 全量讀取此 job 的成員
         with self.state_mgr._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM members WHERE job_id = ?", (job_id,))
             rows = [dict(r) for r in cursor.fetchall()]
 
-        json_by_full_path: Dict[str, dict] = {}
-        json_by_stem_path: Dict[str, dict] = {}
-        json_by_filename: Dict[str, List[dict]] = {}
-
-        media_list = []
-        json_count = 0
-        media_count = 0
         total_uncompressed_size = 0
         rejected_count = 0
+        media_count = 0
+        json_count = 0
+
+        source_items: List[SourceItem] = []
+        db_id_map: Dict[str, int] = {}
 
         for m in rows:
             total_uncompressed_size += m['uncompressed_size']
@@ -59,96 +47,44 @@ class TakeoutIndexer:
 
             if m['is_json']:
                 json_count += 1
-                norm_p = m['normalized_path'].lower()
-                json_by_full_path[norm_p] = m
-
-                stem, fn_stem = self._extract_json_stem(norm_p)
-                stem_lower = stem.lower()
-
-                # 1. 完整相對路徑 stem (例如 takeout/album/img_002.heic)
-                json_by_stem_path[stem_lower] = m
-
-                # 2. 裸 stem (例如 takeout/album/img_002)
-                media_base_stem = os.path.splitext(stem_lower)[0]
-                json_by_stem_path[media_base_stem] = m
-
-                fn_lower = m['filename'].lower()
-                if fn_lower not in json_by_filename:
-                    json_by_filename[fn_lower] = []
-                json_by_filename[fn_lower].append(m)
-
             elif m['is_media']:
                 media_count += 1
-                media_list.append(m)
 
-        # 配對紀錄與單一 JSON 獨佔賦予集合
-        matched_pair_count = 0
-        unmatched_media_count = 0
-        assigned_json_ids: Set[int] = set()
+            key = f"db:{m['member_id']}"
+            item = SourceItem(
+                source_key=key,
+                source_type="TAKEOUT_ZIP",
+                logical_path=m['normalized_path'],
+                filename=m['filename'],
+                extension=os.path.splitext(m['filename'])[1].lower(),
+                size=m['uncompressed_size'],
+                is_media=bool(m['is_media']),
+                is_json=bool(m['is_json']),
+                is_safe=True,
+                archive_fingerprint=m.get('archive_fingerprint'),
+                member_index=m.get('member_index'),
+                member_crc=m.get('member_crc')
+            )
+            source_items.append(item)
+            db_id_map[key] = m['member_id']
+
+        # 呼叫純 SidecarMatcher 進行精準優先序配對
+        outcome = SidecarMatcher.match_sources(source_items)
+
         sidecar_rows = []
-        indexed_media_ids = []
+        assigned_json_ids: Set[int] = set()
 
-        for media in media_list:
-            norm_p = media['normalized_path'].lower()
-            media_stem = os.path.splitext(norm_p)[0]
-            matched_json = None
-            match_quality = "NONE"
+        for match in outcome.matched_pairs:
+            m_id = db_id_map[match.media_item.source_key]
+            j_id = db_id_map[match.json_item.source_key]
+            assigned_json_ids.add(j_id)
+            sidecar_rows.append((job_id, m_id, j_id, match.match_quality))
 
-            # 1. 優先匹配：直接在 json_by_stem_path 中尋找 norm_p
-            if norm_p in json_by_stem_path:
-                cand = json_by_stem_path[norm_p]
-                if cand['member_id'] not in assigned_json_ids:
-                    matched_json = cand
-                    match_quality = "EXACT_MEDIA_FULL_PATH"
-
-            # 2. 其次嘗試拼接 .json 與 .supplemental 檔名
-            if not matched_json:
-                candidates = [
-                    (norm_p + ".json", "EXACT_FULL_PATH"),
-                    (norm_p + ".supplemental-metadata.json", "EXACT_FULL_PATH_SUPPLEMENTAL"),
-                    (media_stem + ".json", "BASE_STEM"),
-                    (media_stem + ".supplemental-metadata.json", "BASE_STEM_SUPPLEMENTAL"),
-                ]
-
-                for key, qual in candidates:
-                    if key in json_by_full_path:
-                        cand = json_by_full_path[key]
-                        if cand['member_id'] not in assigned_json_ids:
-                            matched_json = cand
-                            match_quality = qual
-                            break
-                    elif key in json_by_stem_path:
-                        cand = json_by_stem_path[key]
-                        if cand['member_id'] not in assigned_json_ids:
-                            matched_json = cand
-                            match_quality = qual
-                            break
-
-            # 3. 最後嘗試檔名匹配 (跨資料夾/跨 ZIP)
-            if not matched_json:
-                fn_cands = [
-                    (media['filename'] + ".json").lower(),
-                    (media['filename'] + ".supplemental-metadata.json").lower(),
-                    (os.path.basename(media_stem) + ".json").lower(),
-                ]
-                for fn_key in fn_cands:
-                    if fn_key in json_by_filename:
-                        unassigned = [j for j in json_by_filename[fn_key] if j['member_id'] not in assigned_json_ids]
-                        if len(unassigned) == 1:
-                            matched_json = unassigned[0]
-                            match_quality = "FILENAME_MATCH"
-                            break
-
-            if matched_json:
-                matched_pair_count += 1
-                assigned_json_ids.add(matched_json['member_id'])
-                sidecar_rows.append((job_id, media['member_id'], matched_json['member_id'], match_quality))
-            else:
-                unmatched_media_count += 1
-
-            # 僅針對處於 SECURITY_VALIDATED 或 DISCOVERED 狀態的媒體更新為 INDEXED (保護已 VERIFIED / COMPLETED 狀態)
-            if media['status'] in (TakeoutState.SECURITY_VALIDATED, TakeoutState.DISCOVERED):
-                indexed_media_ids.append(media['member_id'])
+        # 僅針對處於 SECURITY_VALIDATED 或 DISCOVERED 狀態的媒體更新為 INDEXED (保護已 VERIFIED / COMPLETED 狀態)
+        indexed_media_ids = [
+            m['member_id'] for m in rows
+            if m['is_media'] and m['status'] in (TakeoutState.SECURITY_VALIDATED, TakeoutState.DISCOVERED)
+        ]
 
         # 批次寫入 sidecar_links
         if sidecar_rows:
@@ -166,8 +102,8 @@ class TakeoutIndexer:
             "job_id": job_id,
             "media_count": media_count,
             "json_count": json_count,
-            "matched_pair_count": matched_pair_count,
-            "unmatched_media_count": unmatched_media_count,
+            "matched_pair_count": len(outcome.matched_pairs),
+            "unmatched_media_count": len(outcome.unmatched_media) + len(outcome.ambiguous_media),
             "unmatched_json_count": max(0, json_count - len(assigned_json_ids)),
             "total_uncompressed_bytes": total_uncompressed_size,
             "total_uncompressed_gb": round(total_uncompressed_size / (1024 ** 3), 2),
