@@ -11,6 +11,9 @@
 - `.lnk` 只供人工瀏覽，SQLite 才是 ReviewEntry、MediaGroup 與 Quarantine 狀態的權威來源。
 - Live Photo MOV 必須在短影片分類前完成群組配對，避免被誤列為待刪短影片。
 - `_Review/01`～`06` 只建立捷徑；只有 `_Review/99_待刪除` 可以觸發完整 MediaGroup 搬至 `_Quarantine/待刪除`。
+- MediaGroup 媒體配對必須限制在相同來源類型、相同 ZIP 指紋、相同邏輯目錄與完全相同 stem；不可跨 ZIP 或移除 `(1)` 編號後猜測配對。
+- Live Photo 僅接受 HEIC/JPEG + MOV/MP4，RAW 配對僅接受 RAW + JPEG；同 stem 並不足以證明兩個檔案屬於同組。
+- MediaGroup SQLite 寫入必須冪等，重跑同一群組時不得累積重複的 `media_group_members`。
 
 ## 📦 外部依賴追蹤
 
@@ -41,3 +44,4 @@
 - 2026-08-07：新增可關閉、預設啟用的 Sidecar JSON 一併處理功能。
 - 2026-08-09：確立 v3.0 採人工審核優先、MediaGroup 原子處理、捷徑 Review 與 Quarantine 流程。
 - 2026-08-09：決定先完成 Phase 0 Takeout 基線驗收，再進入 v3.0 Phase 1；UI 最終整理延至 Phase 10。
+- 2026-08-09：完成 v3.0 Phase 2 Codex 獨立複查；收斂 Live Photo／RAW 配對範圍，補上跨 ZIP、跨任務與 SQLite 冪等防護。

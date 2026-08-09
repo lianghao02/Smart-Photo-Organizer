@@ -41,7 +41,7 @@ class JobType:
 
 
 class TakeoutStateManager:
-    CURRENT_SCHEMA_VERSION = 3
+    CURRENT_SCHEMA_VERSION = 4
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -217,6 +217,17 @@ class TakeoutStateManager:
 
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_members_archive_member ON members(archive_id, member_index);")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sidecar_unique ON sidecar_links(job_id, json_member_id);")
+
+            # Phase 2 初版可能留下重複群組成員；先保留最早一筆再建立唯一索引。
+            conn.execute("""
+                DELETE FROM media_group_members
+                WHERE group_member_id NOT IN (
+                    SELECT MIN(group_member_id)
+                    FROM media_group_members
+                    GROUP BY group_id, source_key
+                )
+            """)
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_mg_members_unique_source ON media_group_members(group_id, source_key);")
 
             conn.execute("PRAGMA foreign_key_check;")
             conn.execute(f"PRAGMA user_version = {self.CURRENT_SCHEMA_VERSION};")
@@ -576,7 +587,7 @@ class TakeoutStateManager:
 
         return pending_members
 
-    def create_media_group_record(
+    def create_media_group(
         self,
         group_id: str,
         job_id: str,
@@ -588,32 +599,63 @@ class TakeoutStateManager:
         status: str = "DISCOVERED",
         members: Optional[List[Dict[str, Any]]] = None
     ) -> str:
-        """建立 MediaGroup 及其成員關聯紀錄"""
-        now = datetime.datetime.utcnow().isoformat()
+        """建立或更新 MediaGroup；重複執行時會冪等取代該群組的成員關聯。"""
+        if not group_id:
+            raise ValueError("group_id 不得為空")
+        if source_type not in {"FOLDER", "TAKEOUT_ZIP"}:
+            raise ValueError(f"不支援的 MediaGroup source_type: {source_type}")
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO media_groups (
+                INSERT INTO media_groups (
                     group_id, job_id, primary_member_id, source_type,
                     capture_date, date_source, date_confidence, status, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(group_id) DO UPDATE SET
+                    job_id = excluded.job_id,
+                    primary_member_id = excluded.primary_member_id,
+                    source_type = excluded.source_type,
+                    capture_date = excluded.capture_date,
+                    date_source = excluded.date_source,
+                    date_confidence = excluded.date_confidence,
+                    status = excluded.status
                 """,
                 (group_id, job_id, primary_member_id, source_type, capture_date, date_source, date_confidence, status, now)
             )
 
+            conn.execute("DELETE FROM media_group_members WHERE group_id = ?", (group_id,))
             if members:
-                for m in members:
-                    conn.execute(
-                        """
-                        INSERT INTO media_group_members (
-                            group_id, member_id, source_key, role, created_at
-                        ) VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (group_id, m.get("member_id"), m.get("source_key", ""), m.get("role", "AUXILIARY"), now)
-                    )
+                seen_source_keys = set()
+                rows = []
+                for member in members:
+                    source_key = member.get("source_key", "")
+                    if not source_key or source_key in seen_source_keys:
+                        continue
+                    seen_source_keys.add(source_key)
+                    rows.append((
+                        group_id,
+                        member.get("member_id"),
+                        source_key,
+                        member.get("role", "AUXILIARY"),
+                        now,
+                    ))
+                conn.executemany(
+                    """
+                    INSERT INTO media_group_members (
+                        group_id, member_id, source_key, role, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
         return group_id
 
-    def get_media_group_record(self, group_id: str) -> Optional[Dict[str, Any]]:
+    def create_media_group_record(self, *args, **kwargs) -> str:
+        """向下相容 Phase 2 初版方法名稱。"""
+        return self.create_media_group(*args, **kwargs)
+
+    def get_media_group(self, group_id: str) -> Optional[Dict[str, Any]]:
         """取得單一 MediaGroup 紀錄及其所有成員列舉"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
@@ -623,20 +665,45 @@ class TakeoutStateManager:
                 return None
             group = dict(g_row)
 
-            cursor.execute("SELECT * FROM media_group_members WHERE group_id = ?", (group_id,))
+            cursor.execute(
+                "SELECT * FROM media_group_members WHERE group_id = ? ORDER BY group_member_id",
+                (group_id,),
+            )
             group["members"] = [dict(r) for r in cursor.fetchall()]
             return group
 
-    def list_media_groups_for_job(self, job_id: str) -> List[Dict[str, Any]]:
-        """列出指定 job_id 下的所有 MediaGroup"""
+    def get_media_group_record(self, group_id: str) -> Optional[Dict[str, Any]]:
+        """向下相容 Phase 2 初版方法名稱。"""
+        return self.get_media_group(group_id)
+
+    def list_media_groups(self, job_id: str) -> List[Dict[str, Any]]:
+        """以固定順序列出指定 Job 的所有 MediaGroup，避免逐群組 N+1 查詢。"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT group_id FROM media_groups WHERE job_id = ?", (job_id,))
-            g_ids = [r["group_id"] for r in cursor.fetchall()]
+            cursor.execute(
+                "SELECT * FROM media_groups WHERE job_id = ? ORDER BY group_id",
+                (job_id,),
+            )
+            groups = [dict(row) for row in cursor.fetchall()]
+            groups_by_id = {group["group_id"]: group for group in groups}
+            for group in groups:
+                group["members"] = []
 
-        groups = []
-        for gid in g_ids:
-            g = self.get_media_group_record(gid)
-            if g:
-                groups.append(g)
-        return groups
+            cursor.execute(
+                """
+                SELECT member.*
+                FROM media_group_members AS member
+                JOIN media_groups AS media_group ON media_group.group_id = member.group_id
+                WHERE media_group.job_id = ?
+                ORDER BY member.group_id, member.group_member_id
+                """,
+                (job_id,),
+            )
+            for row in cursor.fetchall():
+                member = dict(row)
+                groups_by_id[member["group_id"]]["members"].append(member)
+            return groups
+
+    def list_media_groups_for_job(self, job_id: str) -> List[Dict[str, Any]]:
+        """向下相容 Phase 2 初版方法名稱。"""
+        return self.list_media_groups(job_id)

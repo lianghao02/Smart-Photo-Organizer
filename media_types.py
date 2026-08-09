@@ -20,6 +20,14 @@ EXT_VIDEOS: Set[str] = {
 # 媒體副檔名總集 (相片 + 影片)
 EXT_MEDIA: Set[str] = EXT_PHOTOS | EXT_VIDEOS
 
+# Phase 2 配對規則使用的媒體子集合。集中定義可避免各模組各自維護而產生差異。
+RAW_PHOTO_EXTENSIONS: Set[str] = {
+    '.raw', '.arw', '.cr2', '.cr3', '.dng', '.nef', '.orf', '.rw2', '.pef', '.sr2'
+}
+JPEG_PHOTO_EXTENSIONS: Set[str] = {'.jpg', '.jpeg'}
+LIVE_PHOTO_IMAGE_EXTENSIONS: Set[str] = {'.heic', '.jpg', '.jpeg'}
+LIVE_PHOTO_VIDEO_EXTENSIONS: Set[str] = {'.mov', '.mp4'}
+
 # 系統與輔助廢棄檔副檔名集合
 EXT_JUNK: Set[str] = {
     '.json', '.ini', '.db', '.html', '.txt', '.tmp', '.url'

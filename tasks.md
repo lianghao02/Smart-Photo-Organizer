@@ -2,8 +2,8 @@
 
 ## 前置基線
 
-- Phase 1 簽收 Commit：`3401439` (或最新簽收版本)
-- 既有完整測試：58/58 通過
+- Phase 1 Codex 簽收 Commit：`531a87f`
+- Phase 1 既有測試：58 通過、1 項因 Windows 權限明確略過
 - Phase 0 與 Phase 1 已凍結；除修復 Phase 2 造成的 Regression 外，不得修改既有 Takeout 或 SidecarMatcher 的核心解壓與優先序契約。
 
 ## 目標
@@ -57,7 +57,18 @@ Phase 2 只在記憶體與 SQLite 建立 MediaGroup，不搬移、不刪除、�
 
 - [x] `python -m py_compile` 可編譯所有產品與測試模組。
 - [x] `python -c "import main, source_index, sidecar_matcher, media_group"` 成功。
-- [x] 既有 58 項測試全部通過。
+- [x] Phase 1 既有 58 項測試全部通過，另有 1 項 Windows Symlink 權限測試明確略過。
 - [x] Phase 2 新測試全部通過。
 - [x] `git diff --check` 無錯誤。
 - [x] Git 差異只包含 Phase 2 必要模組、整合與測試。
+
+## Codex 獨立複查簽收
+
+- [x] 修正不同 Takeout ZIP 同路徑、同 stem 媒體被誤組問題。
+- [x] 僅允許 HEIC/JPEG + MOV/MP4 成為 Live Photo，RAW + JPEG 成為 RAW 配對。
+- [x] 停止移除 `(1)` 等檔名編號，避免不同媒體互相誤配。
+- [x] MediaGroup ID 納入 Job 範圍並採穩定雜湊，避免跨任務覆寫。
+- [x] SQLite API 契合 `create_media_group()`、`get_media_group()`、`list_media_groups()`。
+- [x] MediaGroup 成員寫入具備冪等性，舊版重複資料可安全遷移。
+- [x] Phase 2 測試 12/12 通過；全專案 71 項測試中 70 通過、1 項因 Windows 權限明確略過。
+- [x] `git diff --check` 無錯誤，且未建立任何 Phase 3 模組。
