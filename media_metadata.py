@@ -62,12 +62,12 @@ def write_sidecar_atomic(sidecar_bytes: bytes, target_json_path: str) -> Tuple[b
         return False, str(e)
 
 
+from media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA
+
+
 class MediaMetadataExtractor:
-    # 共用照片副檔名集合 (包含所有相機原生與 RAW 格式)
-    EXT_PHOTOS = {
-        '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.raw', '.arw', '.cr2', '.nef',
-        '.cr3', '.dng', '.orf', '.rw2', '.pef', '.sr2'
-    }
+    # 共用照片副檔名集合 (單一副檔名來源)
+    EXT_PHOTOS = EXT_PHOTOS
 
     # 精準常見螢幕解析度集合
     COMMON_SCREEN_SIZES = {

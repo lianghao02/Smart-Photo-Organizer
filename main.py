@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import zipfile
 import media_metadata
+from media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA, EXT_JUNK
 from typing import Optional, Callable, Dict, Any, Set, Tuple
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
@@ -430,9 +431,9 @@ class ConfigConstants:
     FFPROBE_PATH = os.getenv("FFPROBE_PATH", "ffprobe")
     MEDIA_METADATA_TIMEOUT_SECONDS = 15
 
-    EXT_PHOTOS: Set[str] = {'.jpg', '.jpeg', '.png', '.heic', '.bmp', '.tiff', '.raw', '.arw', '.webp', '.nef', '.cr2', '.cr3', '.dng', '.orf', '.rw2', '.pef', '.sr2'}
-    EXT_VIDEOS: Set[str] = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.3gp', '.m4v'}
-    EXT_JUNK:   Set[str] = {'.json', '.ini', '.db', '.html', '.txt', '.tmp', '.url'}
+    EXT_PHOTOS: Set[str] = EXT_PHOTOS
+    EXT_VIDEOS: Set[str] = EXT_VIDEOS
+    EXT_JUNK:   Set[str] = EXT_JUNK
     SCREENSHOT_KEYWORDS  = ['screenshot', 'screen shot', 'captura', '螢幕擷取', '截圖', 'snapshot']
     SURVEILLANCE_KEYWORDS = ['cctv', '監視器', '監控', 'surveillance', 'security camera', 'nvr', 'dvr', 'ipcam']
     EXCLUSION_SCORE_THRESHOLD = 7

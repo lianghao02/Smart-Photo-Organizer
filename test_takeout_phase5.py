@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 Phase 5 極限壓力測試與 Chaos 斷電續傳自動化測試套件
-測試全流水線端到端匯入、損毀 ZIP 防禦、Chaos 斷電續傳與 Sidecar-Only 復原、跨 ZIP 多分卷配對及百級規模負載。
+Google Takeout ZIP 匯入引擎 Phase 5 / Phase 0 續傳基線自動化測試套件
+測試全流水線端到端匯入、損毀 ZIP 與格式錯誤 Sidecar 防禦、Sidecar-only 續傳、dirty .part 清理、零媒體重複與 SQLite 100 筆批次負載驗證。
 """
 
 import os
@@ -80,10 +80,16 @@ class TestTakeoutPhase5(unittest.TestCase):
         self.assertTrue(any(f.endswith(".jpg.json") for f in files))
 
     def test_2_corrupted_zip_and_broken_sidecar_handling(self):
-        """Phase 5 Step 2: 驗證損毀 ZIP 封存檔與格式錯誤 Sidecar 的強健性與 COMPLETED_WITH_ERRORS 防禦」"""
+        """Phase 5 Step 2: 驗證損毀 ZIP 封存檔與格式錯誤 JSON Sidecar 的強健性與 COMPLETED_WITH_ERRORS 防禦」"""
         corrupted_zip = os.path.join(self.src_dir, "Takeout-Corrupted.zip")
         with open(corrupted_zip, 'wb') as f:
             f.write(b"PK_CORRUPTED_HEADER_BYTES_123456789")
+
+        # 建立包含格式錯誤 (無效 JSON 語法) Sidecar 的 ZIP 檔
+        broken_sidecar_zip = os.path.join(self.src_dir, "Takeout-BrokenSidecar.zip")
+        with zipfile.ZipFile(broken_sidecar_zip, 'w') as zf_broken:
+            zf_broken.writestr("Takeout/Google Photos/Album2018/broken_photo.jpg", self.sample_photo_bytes)
+            zf_broken.writestr("Takeout/Google Photos/Album2018/broken_photo.jpg.json", b"{invalid json format...")
 
         web_bridge = app_main.WebBridge()
         web_bridge._run_takeout_audit(self.src_dir, self.dst_dir, is_dry_run=False)
@@ -98,7 +104,7 @@ class TestTakeoutPhase5(unittest.TestCase):
             self.assertEqual(job_row['status'], import_state.TakeoutState.COMPLETED_WITH_ERRORS)
 
     def test_3_chaos_interruption_and_resumption(self):
-        """Phase 5 Step 3: 驗證 Chaos 隨機中斷與斷電續傳：中斷的 .part 被清理，Sidecar-only 成功重試且不產生重複媒體"""
+        """Phase 5 Step 3: 驗證中斷續傳與修復：dirty .part 被清理，Sidecar-only 成功重試、重用原 Job 且無重複媒體」"""
         web_bridge = app_main.WebBridge()
         # 1. 執行首次匯入
         web_bridge._run_takeout_audit(self.src_dir, self.dst_dir, is_dry_run=False)
@@ -106,12 +112,15 @@ class TestTakeoutPhase5(unittest.TestCase):
         db_path = os.path.join(self.dst_dir, "_ImportTemp", "takeout_import.db")
         state_mgr = import_state.TakeoutStateManager(db_path)
 
+        photo_dir = os.path.join(self.dst_dir, "2018", "06", "Photos")
+        media_count_before = len([f for f in os.listdir(photo_dir) if not f.endswith('.json')])
+
         with state_mgr._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT job_id FROM jobs ORDER BY created_at DESC LIMIT 1")
             job_id = cursor.fetchone()['job_id']
 
-            # 模擬其中一個成員在 Sidecar 寫入前發電中斷 (標記為 COMPLETED_WITH_ERRORS 並刪除其 Sidecar .json 檔)
+            # 模擬其中一個成員在 Sidecar 寫入前發電中斷 (刪除 Sidecar JSON，並建立孤兒 dirty .part 檔)
             cursor.execute("SELECT member_id, final_destination FROM members WHERE is_media = 1 LIMIT 1")
             m_row = cursor.fetchone()
             mid = m_row['member_id']
@@ -120,13 +129,21 @@ class TestTakeoutPhase5(unittest.TestCase):
             if os.path.exists(json_dest):
                 os.remove(json_dest)
 
+            dirty_part = media_dest + ".part"
+            with open(dirty_part, 'wb') as f:
+                f.write(b"dirty temp bytes")
+
             state_mgr.update_job_status(job_id, import_state.TakeoutState.COMPLETED_WITH_ERRORS)
             state_mgr.update_member_status(mid, import_state.TakeoutState.COMPLETED_WITH_ERRORS, error_msg="模擬中斷")
 
         # 2. 模擬二次開啟 Takeout 引擎執行斷電續傳
         web_bridge._run_takeout_audit(self.src_dir, self.dst_dir, is_dry_run=False)
 
-        # 驗證確實重用了原本未完成的 job_id 續傳，Sidecar JSON 被無損補寫，狀態升級為 COMPLETED
+        # 驗證確實重用了原本未完成的 job_id 續傳，dirty .part 被清理，Sidecar JSON 被無損補寫，且無重複媒體
+        media_count_after = len([f for f in os.listdir(photo_dir) if not f.endswith('.json')])
+        self.assertEqual(media_count_after, media_count_before)
+        self.assertFalse(os.path.exists(dirty_part))
+
         with state_mgr._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT count(*) as job_cnt FROM jobs")

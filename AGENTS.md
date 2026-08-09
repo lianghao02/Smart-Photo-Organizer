@@ -1,6 +1,6 @@
 # Smart-Photo-Organizer AI 協作規則
 
-本檔是本專案唯一的 AI 協作規則來源。Antigravity、Codex 與其他開發代理均須先閱讀本檔，再依 `tasks.md` 執行當前任務。
+本檔是本專案範圍內唯一的 AI 協作規則來源；上層全域憲法與平台安全規範仍優先適用。Antigravity、Codex 與其他開發代理均須先閱讀本檔，再依 `tasks.md` 執行當前任務。
 
 ## 一、文件閱讀順序
 
