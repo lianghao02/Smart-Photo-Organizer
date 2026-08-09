@@ -5,11 +5,32 @@ Smart-Photo-Organizer v3.0 Phase 1 - 唯讀來源索引模組 (source_index.py)
 """
 
 import os
+import stat
 import zipfile
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any, Set
 from media_types import EXT_MEDIA, EXT_PHOTOS, EXT_VIDEOS, EXT_JUNK
-from takeout_zip import TakeoutZipScanner
+from takeout_zip import TakeoutZipScanner, ZipSecurityError
+
+
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def is_reparse_point_or_link(path: str) -> bool:
+    """
+    檢查指定路徑是否為 Symlink、Windows Junction 或 Reparse Point。
+    """
+    if os.path.islink(path):
+        return True
+    try:
+        st = os.lstat(path)
+        if hasattr(st, 'st_file_attributes') and (st.st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT):
+            return True
+        if stat.S_ISLNK(st.st_mode):
+            return True
+    except (OSError, AttributeError):
+        pass
+    return False
 
 
 @dataclass
@@ -38,7 +59,7 @@ class SourceItem:
 
 class FolderSourceIndexer:
     """一般資料夾唯讀索引器"""
-    
+
     # 專案管理與系統隱藏資料夾排除清單 (不區分大小寫)
     EXCLUDED_DIR_NAMES: Set[str] = {
         '_excluded', '_review', '_reviewcache', '_quarantine', '_importtemp',
@@ -62,23 +83,23 @@ class FolderSourceIndexer:
         items: List[SourceItem] = []
 
         for current_root, dirs, files in os.walk(norm_root, topdown=True, followlinks=False):
-            # 1. 檢查並排除專案管理與系統資料夾
+            # 1. 檢查並排除專案管理與系統資料夾、Symlink 及 Reparse Point/Junction
             dirs[:] = [
                 d for d in dirs
                 if d.lower() not in cls.EXCLUDED_DIR_NAMES
-                and not os.path.islink(os.path.join(current_root, d))
+                and not is_reparse_point_or_link(os.path.join(current_root, d))
             ]
 
             for fname in files:
                 abs_p = os.path.join(current_root, fname)
-                
-                # 2. 不跟隨 Symlink / Junction
-                if os.path.islink(abs_p):
+
+                # 2. 不跟隨 Symlink / Junction / Reparse Point
+                if is_reparse_point_or_link(abs_p):
                     continue
 
                 rel_p = os.path.relpath(abs_p, norm_root).replace('\\', '/').strip('/')
                 ext = os.path.splitext(fname)[1].lower()
-                
+
                 try:
                     st_size = os.path.getsize(abs_p)
                 except OSError:
@@ -107,16 +128,13 @@ class FolderSourceIndexer:
 
 
 class TakeoutSourceIndexer:
-    """Takeout ZIP 唯讀來源索引器 (包裝 TakeoutZipScanner 中央目錄結果，絕不解壓媒體)"""
+    """Takeout ZIP 唯讀來源索引器 (包裝 TakeoutZipScanner.scan_archive 中央目錄結果，絕不解壓媒體)"""
 
     @classmethod
     def index_archives(cls, zip_paths: List[str]) -> List[SourceItem]:
         """
         唯讀掃描一或多個 Takeout ZIP 封存檔中央目錄。
-        規則：
-        1. 只讀取 ZipInfo，絕不解壓媒體檔。
-        2. 每個成員轉換為 SourceItem。
-        3. 保留 archive_fingerprint, member_index, member_crc 等 Takeout 必要元資料。
+        使用 TakeoutZipScanner.scan_archive 嚴格校驗與讀取。
         """
         if not zip_paths:
             return []
@@ -125,13 +143,10 @@ class TakeoutSourceIndexer:
 
         for zip_p in zip_paths:
             if not zip_p or not os.path.exists(zip_p):
-                continue
+                raise ZipSecurityError(f"ZIP 封存檔路徑不存在: {zip_p}")
 
             fp = TakeoutZipScanner.get_archive_fingerprint(zip_p)
-            try:
-                scanned_members = TakeoutZipScanner.scan_zip_file(zip_p)
-            except Exception as e:
-                continue
+            scanned_members = TakeoutZipScanner.scan_archive(zip_p)
 
             for m in scanned_members:
                 fname = m["filename"]

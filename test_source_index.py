@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Smart-Photo-Organizer v3.0 Phase 1 - 來源索引單元測試 (test_source_index.py)
-驗證 FolderSourceIndexer 與 TakeoutSourceIndexer 之唯讀索引、中文路徑、管理目錄排除、Symlink 跳過與 ZipInfo 唯讀存取。
+驗證 FolderSourceIndexer 與 TakeoutSourceIndexer 之唯讀索引、中文路徑、管理目錄排除、Symlink/Junction/Reparse Point 跳過與 ZipInfo 唯讀存取。
 """
 
 import os
@@ -16,8 +16,8 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from source_index import FolderSourceIndexer, TakeoutSourceIndexer, SourceItem
-from takeout_zip import TakeoutZipScanner
+from source_index import FolderSourceIndexer, TakeoutSourceIndexer, SourceItem, is_reparse_point_or_link
+from takeout_zip import TakeoutZipScanner, ZipSecurityError
 
 
 class TestSourceIndex(unittest.TestCase):
@@ -63,32 +63,40 @@ class TestSourceIndex(unittest.TestCase):
         self.assertEqual(photo_item.source_type, "FOLDER")
         self.assertEqual(photo_item.logical_path, "2018年家庭旅遊/台北101照片.jpg")
 
-    def test_folder_source_indexer_symlink_skipping(self):
-        """驗證一般資料夾唯讀索引：符號連結 (Symlink) 自動跳過不跟隨"""
+    def test_folder_source_indexer_reparse_point_and_symlink_skipping(self):
+        """驗證一般資料夾唯讀索引：Reparse Point, Junction 與 Symlink 自動跳過不跟隨"""
         real_file = os.path.join(self.folder_dir, "real_photo.jpg")
         with open(real_file, 'wb') as f:
             f.write(b"real photo")
 
+        # 直接驗證 is_reparse_point_or_link 的運作
+        self.assertFalse(is_reparse_point_or_link(real_file))
+
         link_file = os.path.join(self.folder_dir, "link_photo.jpg")
+        has_symlink = False
         try:
             os.symlink(real_file, link_file)
+            has_symlink = True
         except (OSError, NotImplementedError, AttributeError):
-            self.skipTest("當前作業系統環境未開放 symlink 權限，依規範跳過")
+            pass
+
+        if has_symlink:
+            self.assertTrue(is_reparse_point_or_link(link_file))
 
         items = FolderSourceIndexer.index_folder(self.folder_dir)
         filenames = [item.filename for item in items]
         self.assertIn("real_photo.jpg", filenames)
-        self.assertNotIn("link_photo.jpg", filenames)
+        if has_symlink:
+            self.assertNotIn("link_photo.jpg", filenames)
 
     def test_takeout_source_indexer_read_only_central_directory(self):
-        """驗證 Takeout ZIP 唯讀索引：只讀取 ZipInfo 中央目錄，不解壓媒體檔"""
+        """驗證 Takeout ZIP 唯讀索引：只讀取 ZipInfo 中央目錄，不解壓媒體檔」"""
         zip_path = os.path.join(self.test_dir, "Takeout_Sample.zip")
         photo_bytes = b"Takeout photo sample bytes"
         with zipfile.ZipFile(zip_path, 'w') as zf:
             zf.writestr("Takeout/Google Photos/Album/summer.png", photo_bytes)
             zf.writestr("Takeout/Google Photos/Album/summer.png.json", b'{"timestamp":"123456"}')
 
-        # 監聽 Ensure 媒體沒有被解壓到磁碟
         items = TakeoutSourceIndexer.index_archives([zip_path])
         self.assertEqual(len(items), 2)
 
@@ -98,9 +106,13 @@ class TestSourceIndex(unittest.TestCase):
         self.assertEqual(png_item.size, len(photo_bytes))
         self.assertIsNotNone(png_item.archive_fingerprint)
         self.assertIsNotNone(png_item.member_crc)
-
-        # 斷言絕無解壓暫存檔產生
         self.assertIsNone(png_item.abs_path)
+
+    def test_takeout_source_indexer_invalid_zip_error_raising(self):
+        """驗證 Takeout ZIP 唯讀索引：傳入不存在或損毀 ZIP 時明確拋出 ZipSecurityError"""
+        invalid_path = os.path.join(self.test_dir, "NonExistent.zip")
+        with self.assertRaises(ZipSecurityError):
+            TakeoutSourceIndexer.index_archives([invalid_path])
 
 
 if __name__ == '__main__':

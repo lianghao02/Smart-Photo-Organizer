@@ -1830,84 +1830,33 @@ class Processor:
         if self.config['resume_enabled']: self._hist_update(src, dst)
 
     def _get_sidecar_pairs(self, src: str, dst: str) -> list[tuple[str, str]]:
-        """取得明確配對的 JSON Sidecar，內部調用 SidecarMatcher 規則並保留原本的命名慣例與相容介面。"""
+        """取得明確配對的 JSON Sidecar，支援同媒體包含全檔名與裸 stem 複數 Sidecar 的完整跟隨。"""
         if not self.config.get('sidecar_enabled', True):
             return []
         ext = os.path.splitext(src)[1].lower()
         if ext not in ConfigConstants.EXT_PHOTOS and ext not in ConfigConstants.EXT_VIDEOS:
             return []
 
-        src_dir = os.path.dirname(src)
-        if not src_dir or not os.path.exists(src_dir):
-            return []
-
-        candidates = [
-            f for f in os.listdir(src_dir)
-            if f.lower().endswith('.json')
-        ]
-        if not candidates:
-            return []
-
-        items: list[SourceItem] = []
-        items.append(SourceItem(
-            source_key="media",
-            source_type="FOLDER",
-            logical_path=os.path.basename(src),
-            filename=os.path.basename(src),
-            extension=ext,
-            size=os.path.getsize(src) if os.path.exists(src) else 0,
-            is_media=True,
-            is_json=False,
-            abs_path=src
-        ))
-
-        if ext in ConfigConstants.EXT_VIDEOS:
-            stem = os.path.splitext(src)[0]
-            for photo_ext in ConfigConstants.EXT_PHOTOS:
-                photo_p = stem + photo_ext
-                if os.path.isfile(photo_p):
-                    items.append(SourceItem(
-                        source_key=f"sibling_photo:{photo_ext}",
-                        source_type="FOLDER",
-                        logical_path=os.path.basename(photo_p),
-                        filename=os.path.basename(photo_p),
-                        extension=photo_ext,
-                        size=os.path.getsize(photo_p),
-                        is_media=True,
-                        is_json=False,
-                        abs_path=photo_p
-                    ))
-                    break
-
-        for cand_fn in candidates:
-            cand_abs = os.path.join(src_dir, cand_fn)
-            if os.path.isfile(cand_abs):
-                items.append(SourceItem(
-                    source_key=f"json:{cand_fn.lower()}",
-                    source_type="FOLDER",
-                    logical_path=cand_fn,
-                    filename=cand_fn,
-                    extension=".json",
-                    size=os.path.getsize(cand_abs),
-                    is_media=False,
-                    is_json=True,
-                    abs_path=cand_abs
-                ))
-
-        outcome = SidecarMatcher.match_sources(items)
         pairs: list[tuple[str, str]] = []
+        full_name_sidecar = src + ".json"
+        if os.path.isfile(full_name_sidecar):
+            pairs.append((full_name_sidecar, dst + ".json"))
 
-        for match in outcome.matched_pairs:
-            if match.media_item.source_key == "media":
-                j_abs = match.json_item.abs_path
-                if not j_abs:
-                    continue
-                if match.match_quality == "EXACT_FULL_PATH":
-                    pairs.append((j_abs, dst + ".json"))
-                else:
-                    j_stem = os.path.splitext(dst)[0] + ".json"
-                    pairs.append((j_abs, j_stem))
+        supp_sidecar = src + ".supplemental-metadata.json"
+        if os.path.isfile(supp_sidecar) and supp_sidecar != full_name_sidecar:
+            pairs.append((supp_sidecar, dst + ".supplemental-metadata.json"))
 
+        stem_src = os.path.splitext(src)[0] + ".json"
+        stem_dst = os.path.splitext(dst)[0] + ".json"
+        if stem_src != full_name_sidecar and os.path.isfile(stem_src):
+            # Live Photo 共用檔名時由照片擁有 stem.json，避免影片與照片競爭同一 Sidecar。
+            has_sibling_photo = ext in ConfigConstants.EXT_VIDEOS and any(
+                os.path.isfile(os.path.splitext(src)[0] + photo_ext)
+                or os.path.isfile(os.path.splitext(src)[0] + photo_ext.upper())
+                for photo_ext in ConfigConstants.EXT_PHOTOS
+            )
+            if not has_sibling_photo:
+                pairs.append((stem_src, stem_dst))
         return pairs
 
     def _transfer_sidecars(self, pairs: list[tuple[str, str]], tag: str):
