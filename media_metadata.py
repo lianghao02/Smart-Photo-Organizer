@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v3.3.2 時區與帶 OFFSET ISO 契合版)
-讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，帶時區轉換與 DateParser 95分 Google JSON 完全契合。
+Google Takeout ZIP 匯入引擎 - 媒體 Metadata 解析與日期決策模組 (v4.0 Phase 4 異常隔離版)
+讀取 .part 暫存檔之 EXIF、ffprobe 與 Sidecar JSON，計算 _Review/DateConflict、_Review/LowConfidenceDate 與 _Excluded/Screenshots 隔離路徑。
 """
 
 import os
@@ -38,6 +38,13 @@ class MediaMetadataExtractor:
         return None
 
     @classmethod
+    def is_screenshot_filename(cls, filename: str) -> bool:
+        """檔名特徵捷徑判斷是否為截圖"""
+        fn_lower = filename.lower()
+        patterns = ('screenshot', 'screen_shot', '螢幕快照', '螢幕截圖', '截圖', 'line_album_')
+        return any(p in fn_lower for p in patterns)
+
+    @classmethod
     def resolve_media_date_and_destination(
         cls,
         part_path: str,
@@ -46,18 +53,21 @@ class MediaMetadataExtractor:
         date_parser: Any,
         json_data: Optional[dict] = None,
         folder_pattern: str = "ym",
-        rename_mode: str = "date_seq"
+        rename_mode: str = "date_seq",
+        smart_screenshot: bool = True
     ) -> Dict[str, Any]:
         """
-        針對 .part 暫存檔解析 EXIF/ffprobe Metadata，整合 Sidecar JSON 呼叫 DateParser.get_date_details()
-        傳遞含時區偏移 (+00:00) 的 ISO 字串，確保在 DateParser 中自動透過 .astimezone() 精準轉換為台灣本機時間。
+        針對 .part 暫存檔解析 EXIF/ffprobe Metadata，整合 Sidecar JSON 呼叫 DateParser 進行日期決策
+        並依據 DateConflict、LowConfidenceDate 與 Screenshots 進行階層式異常隔離。
         """
         orig_ext = os.path.splitext(filename)[1].lower()
-
         is_photo = orig_ext in cls.EXT_PHOTOS
         sub_type_folder = "Photos" if is_photo else "Videos"
 
-        # 轉換 Sidecar JSON UTC 時間為帶時區偏移 (+00:00 / Z) 的 ISO 8601 字串，供 DateParser 自動轉為本機時間
+        # 1. 檔名截圖識別
+        is_screenshot = smart_screenshot and cls.is_screenshot_filename(filename)
+
+        # 2. 轉換 Sidecar JSON UTC 時間為帶時區偏移 (+00:00 / Z) 的 ISO 8601 字串
         google_json_date = None
         if json_data and 'timestamp' in json_data:
             try:
@@ -66,7 +76,7 @@ class MediaMetadataExtractor:
             except Exception:
                 pass
 
-        # 呼叫專案核心 DateParser 的 get_date_details 方法 (傳遞 google_json_date 觸發 95 分與 conflict 評估)
+        # 3. 呼叫 DateParser 取得日期細節與衝突標記
         details = date_parser.get_date_details(
             part_path,
             is_photo=is_photo,
@@ -88,13 +98,20 @@ class MediaMetadataExtractor:
             year_str = "No_Date"
             month_str = "No_Date"
 
-        # 根據 folder_pattern 計算與主 Processor 一致的標頭資料夾結構 (年/月/Photos|Videos)
-        if year_str == "No_Date":
+        # 4. Phase 4 階層式異常隔離路徑計算
+        if is_screenshot:
+            # 截圖隔離
+            target_subfolder = os.path.join(dst_root, "_Excluded", "Screenshots")
+        elif has_conflict:
+            # EXIF 與 Sidecar JSON 日期衝突隔離
+            target_subfolder = os.path.join(dst_root, "_Review", "DateConflict", year_str, sub_type_folder)
+        elif confidence < 60:
+            # 低可信度日期隔離
+            target_subfolder = os.path.join(dst_root, "_Review", "LowConfidenceDate", year_str, sub_type_folder)
+        elif year_str == "No_Date":
             target_subfolder = os.path.join(dst_root, "No_Date", sub_type_folder)
         elif folder_pattern == "y":
             target_subfolder = os.path.join(dst_root, year_str, sub_type_folder)
-        elif folder_pattern == "ym":
-            target_subfolder = os.path.join(dst_root, year_str, month_str, sub_type_folder)
         else:
             target_subfolder = os.path.join(dst_root, year_str, month_str, sub_type_folder)
 
@@ -105,5 +122,6 @@ class MediaMetadataExtractor:
             "target_dir": target_subfolder,
             "parsed_dt": parsed_dt,
             "is_photo": is_photo,
-            "has_conflict": has_conflict
+            "has_conflict": has_conflict,
+            "is_screenshot": is_screenshot
         }
