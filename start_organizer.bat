@@ -1,26 +1,33 @@
 @echo off
+setlocal
 chcp 65001 > nul
 cd /d "%~dp0"
 
-where python >nul 2>nul
-if %errorlevel% neq 0 (
-    echo [ERROR] 找不到 Python 環境，請確認已安裝 Python 並勾選 Add to PATH。
+set "VENV_PYTHON=%~dp0.venv\Scripts\python.exe"
+set "VENV_PYTHONW=%~dp0.venv\Scripts\pythonw.exe"
+
+if not exist "%VENV_PYTHON%" (
+    echo [錯誤] 找不到可用的虛擬環境。
+    echo 請先依 requirements.txt 重新建立 .venv。
     pause
     exit /b 1
 )
 
-if not exist ".venv" (
-    echo [INFO] 正在建立虛擬環境與安裝必要套件...
-    python -m venv .venv
-    call .venv\Scripts\activate.bat
-    if exist "requirements.txt" (
-        pip install --no-pip-version-check -q -r requirements.txt
-    )
-) else (
-    call .venv\Scripts\activate.bat
+"%VENV_PYTHON%" -c "import sys" >nul 2>nul
+if errorlevel 1 (
+    echo [錯誤] 現有 .venv 已失效，可能仍引用搬遷前的路徑。
+    echo 請依 DEVELOPMENT_ENVIRONMENT.md 的流程安全重建。
+    pause
+    exit /b 1
 )
 
-:: 使用 pythonw 啟動 (無 CMD 主視窗) 並即刻結束批次檔
-start "" pythonw main.py
+if not exist "%VENV_PYTHONW%" (
+    echo [錯誤] 虛擬環境缺少 pythonw.exe。
+    pause
+    exit /b 1
+)
+
+rem 使用虛擬環境內的 pythonw 啟動，避免依賴 PATH 或目前磁碟機。
+start "" "%VENV_PYTHONW%" "%~dp0main.py"
 exit
 
