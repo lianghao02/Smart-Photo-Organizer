@@ -48,14 +48,21 @@ v3.0 採「先分析、人工審核、最後處理」流程。按下「開始分
 ## 執行環境
 
 - Windows 10／11
-- Python 3.12
+- Python 3.13（主要開發與驗證版本；建議使用最新穩定修補版）
 - 安裝依賴：`pip install -r requirements.txt`
 - 建議安裝 FFmpeg，或以 `FFPROBE_PATH` 指定 `ffprobe.exe`，供影片日期與長度解析。
 
-可直接執行 `start_organizer.bat`，或執行：
+請先使用 Python 3.13 建立專案虛擬環境並安裝既有依賴：
 
 ```powershell
-python main.py
+& 'C:\Users\chia-hao\AppData\Local\Programs\Python\Python313\python.exe' -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+完成後可直接執行 `start_organizer.bat`，或執行：
+
+```powershell
+.\.venv\Scripts\python.exe main.py
 ```
 
 ## 驗證
