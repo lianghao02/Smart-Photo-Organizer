@@ -1,5 +1,23 @@
 # 版本變更紀錄
 
+## [v3.1.0] - 2026-08-16
+
+### 架構重構
+
+- **標準工業級套件結構**：全面導入 Python `src-layout`，將 15 個商業邏輯模組集中收納於 `src/`，技術與架構規格文件移至 `docs/`，單元測試收納於 `tests/`，根目錄僅保留核心進入點。
+- **動態匯入相容機制**：`main.py` 與 `tests/` 均設置 `sys.path` 動態注入，確保直接啟動與 unittest 發現機制 100% 相容。
+
+### 安全與例外防禦
+
+- **影像解碼防禦**：`similarity.py` 影像解碼加入 `RuntimeError` 與 Pillow `DecompressionBombError` 攔截，防止毀損或超高像素圖檔導致分析中斷。
+- **SQLite 鎖定超時保護**：`import_state.py` 加入 `PRAGMA busy_timeout = 30000;` 30 秒自動等待，強化 WAL 模式下併發存取穩定性。
+- **Takeout 檔名轉碼增強**：`takeout_zip.py` 新增 `decode_member_name` 自動檢測並修正未標記 UTF-8 之 CP437 檔名，保障中文 Sidecar 匹配精準度。
+
+### 測試與清理
+
+- **全專案單元測試通過**：140 項測試全部跑通（139 Passed, 1 Skipped, 0 Failed）。
+- **清理暫存殘留**：安全清理 `test_rename/` 臨時目錄與過往執行留下的 CSV/JSON 產出檔。
+
 ## [v3.0.1] - 2026-08-13
 
 ### 修正

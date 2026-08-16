@@ -1,12 +1,21 @@
 # -*- coding: utf-8 -*-
 # ==============================================================================
+# -*- coding: utf-8 -*-
+# ==============================================================================
 # 智慧照片整理助手 (Smart Photo Organizer) v2.7
 # ==============================================================================
 # pip install Pillow pillow-heif geopy
 # [選用] pip install xxhash opencv-python numpy reverse_geocoder
 # ==============================================================================
 
+import sys
 import os
+
+# 確保 src 目錄在 sys.path 中
+SRC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+if SRC_PATH not in sys.path:
+    sys.path.insert(0, SRC_PATH)
+
 import re
 import csv
 import json

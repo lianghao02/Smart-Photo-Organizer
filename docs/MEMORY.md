@@ -24,6 +24,10 @@
 - v3.0 分析期間不得同時執行 Quarantine 或日期歸檔；WebBridge 必須以工作鎖拒絕競爭操作。
 - Takeout 正式歸檔前必須重新驗證 `99_待刪除`；待刪除群組不可為了歸檔而重新解壓。
 - 切換來源或目標時須關閉舊 `V3Pipeline` 持有的 Windows Shell 背景程序，避免長時間使用累積殘留程序。
+- Pillow 解碼遇受損或超高畫素檔案可能引發 `DecompressionBombError` (繼承自 `RuntimeError`)，必須在 `try...except` 顯式捕獲，避免中斷相似照片分析管線。
+- SQLite WAL 模式多任務讀寫連線必須配置 `PRAGMA busy_timeout = 30000;` 30 秒重試，避免併發鎖定時直接崩潰。
+- Takeout ZIP 未標記 Bit 11 時預設會以 CP437 解析，必須以 CP437 轉碼為 UTF-8 恢復真實檔名，保障中文 Sidecar 配對。
+- 專案重構為 `src-layout` 後，`main.py` 與 `tests/` 必須動態注入 `sys.path` 包含 `src/`，確保直接啟動與單元測試發現機制皆正常。
 
 ## 📦 外部依賴追蹤
 
@@ -63,3 +67,4 @@
 - 2026-08-09：完成 v3.0 Phase 8 日期異常審核；日期衝突、缺失與低可信度只建立審核捷徑，並以 UTF-8 BOM 原子更新 `date_audit.csv`。
 - 2026-08-09：完成 v3.0 Phase 9 MediaGroup 日期歸檔；整組先複製驗證再移除來源，碰撞時採共同後綴並保留 Sidecar／Live Photo 關係。
 - 2026-08-09：完成 v3.0 Phase 10；以 `V3Pipeline` 串接全流程，移除雲端 placeholder 控制項，完成未完成 Job 接續、非技術 UI、瀏覽器實機驗證與 137 項全專案回歸測試。
+- 2026-08-16：完成 v3.1.0 重構；建立標準工業級 `src-layout`、`docs/` 文件分離與 `tests/` 測試集中收納，修復 Pillow `RuntimeError` 防禦、SQLite 30 秒 `busy_timeout` 與 Takeout CP437 轉碼機制，140 項單元測試 100% 通過。
