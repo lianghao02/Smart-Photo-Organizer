@@ -36,7 +36,7 @@
 ## 驗證
 
 ```powershell
-python -m unittest discover -v
+python -m unittest discover -s tests -v
 ```
 
 測試數量會隨版本調整，以實際指令結果為準。詳細異動請參閱 [CHANGELOG.md](CHANGELOG.md)。

@@ -14,7 +14,7 @@ sys.modules.setdefault("webview", types.ModuleType("webview"))
 import main as app_main
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class _FakePipeline:
