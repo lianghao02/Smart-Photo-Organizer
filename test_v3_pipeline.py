@@ -138,6 +138,25 @@ class TestV3Pipeline(unittest.TestCase):
         self.assertEqual(len(cached_group_dirs), 1)
         self.assertEqual(self._sha256(zip_path), before_zip)
 
+    def test_takeout_analysis_failure_cleans_non_review_cache(self):
+        zip_path = os.path.join(self.source, "failure.zip")
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("Takeout/A/photo.png", self._image_bytes((800, 600)))
+
+        pipeline = self._pipeline(zip_path, "takeout_zip")
+        with patch.object(pipeline, "_resolve_date", side_effect=OSError("date failure")):
+            summary = pipeline.analyze(AnalysisOptions(
+                screenshot_enabled=False,
+                blur_enabled=False,
+                short_video_enabled=False,
+                similar_enabled=False,
+            ))
+
+        self.assertEqual(len(summary.errors), 1)
+        self.assertFalse(os.path.exists(
+            os.path.join(self.destination, "_ReviewCache", summary.job_id)
+        ))
+
     def test_takeout_exact_duplicates_reextract_only_duplicate_review_group(self):
         zip_path = os.path.join(self.source, "duplicates.zip")
         image_bytes = self._image_bytes((800, 600))

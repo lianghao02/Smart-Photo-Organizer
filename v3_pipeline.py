@@ -508,6 +508,9 @@ class V3Pipeline:
                     "filename": group.primary_media.filename,
                     "stage": "分析 MediaGroup",
                 })
+                paths: Dict[str, str] = {}
+                cache_dir: Optional[str] = None
+                keep_cache = False
                 try:
                     paths, hashes, cache_dir = self._materialize_group(group)
                     primary_path = paths[group.primary_media.source_key]
@@ -540,6 +543,7 @@ class V3Pipeline:
                             summary.category_counts.get(entry.category, 0) + 1
                         )
 
+                    keep_cache = bool(immediate.entries)
                     date_target = DateReviewTarget.from_analysis_target(target)
                     date_target = DateReviewTarget(
                         **{
@@ -549,6 +553,7 @@ class V3Pipeline:
                     )
                     date_targets.append(date_target)
                     date_issue = date_reviewer.issue_for(date_target)
+                    keep_cache = keep_cache or bool(date_issue)
 
                     signature = self._exact_signature(group, paths, hashes)
                     exact_signatures[group.group_id] = signature
@@ -571,13 +576,14 @@ class V3Pipeline:
                                 f"{group.group_id}: 略過相似照片指紋 ({exc})"
                             )
 
-                    keep_cache = bool(immediate.entries or date_issue)
                     if keep_cache and cache_dir:
                         cached_groups.add(group.group_id)
                     elif cache_dir:
                         self._cleanup_unused_cache(group, paths, cache_dir)
                 except Exception as exc:
                     summary.errors.append(f"{group.group_id}: 分析失敗 ({exc})")
+                    if cache_dir and not keep_cache:
+                        self._cleanup_unused_cache(group, paths, cache_dir)
 
             # 完全重複：只登記決定性排序後的重複副本。
             for signature, group_ids in signature_buckets.items():

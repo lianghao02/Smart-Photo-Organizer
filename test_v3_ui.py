@@ -88,6 +88,22 @@ class TestV3UI(unittest.TestCase):
             bridge._run_v3_exclusive(fail)
         self.assertFalse(bridge._v3_busy)
 
+    def test_bridge_rejects_overlapping_folder_source_and_destination(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = os.path.join(root, "source")
+            child_destination = os.path.join(source, "organized")
+            parent_destination = root
+            os.makedirs(source)
+            bridge = app_main.WebBridge()
+
+            for destination in (source, child_destination, parent_destination):
+                with self.assertRaisesRegex(ValueError, "不可相同或互為父子"):
+                    bridge._v3_config_paths({
+                        "source_dir": source,
+                        "dest_dir": destination,
+                        "source_mode": "folder",
+                    })
+
     def test_bridge_closes_previous_pipeline_when_paths_change(self):
         _FakePipeline.instances.clear()
         with tempfile.TemporaryDirectory() as root:

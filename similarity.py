@@ -126,7 +126,7 @@ class SimilarPhotoDetector:
                 if width <= 0 or height <= 0:
                     raise ValueError("影像尺寸無效")
                 dhash = self._dhash(image)
-        except (UnidentifiedImageError, OSError, ValueError) as exc:
+        except (UnidentifiedImageError, OSError, ValueError, RuntimeError) as exc:
             raise OSError(f"無法解碼影像 ({exc})") from exc
         after = os.stat(candidate.path)
         if (after.st_size, after.st_mtime_ns) != state:

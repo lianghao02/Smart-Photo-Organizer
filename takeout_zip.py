@@ -103,6 +103,19 @@ class TakeoutZipScanner:
 
         return True, None
 
+    @staticmethod
+    def decode_member_name(info: zipfile.ZipInfo) -> str:
+        """修復未設定 Bit 11 (0x800) 的 CP437 解碼 Takeout ZIP 檔名"""
+        filename = info.filename
+        if not (info.flag_bits & 0x800):
+            try:
+                raw_bytes = filename.encode('cp437')
+                decoded = raw_bytes.decode('utf-8')
+                return decoded
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+        return filename
+
     @classmethod
     def scan_archive(cls, zip_path: str) -> List[Dict[str, Any]]:
         """
@@ -124,21 +137,22 @@ class TakeoutZipScanner:
                     continue
 
                 is_safe, reason = cls.validate_zip_info(info)
-                fname = os.path.basename(info.filename)
+                member_name = cls.decode_member_name(info)
+                fname = os.path.basename(member_name)
                 ext = os.path.splitext(fname)[1].lower()
 
                 member_item = {
                     "member_index": idx,
-                    "member_name": info.filename,
+                    "member_name": member_name,
                     "filename": fname,
-                    "normalized_path": info.filename.replace('\\', '/').strip('/'),
+                    "normalized_path": member_name.replace('\\', '/').strip('/'),
                     "member_crc": info.CRC,
                     "uncompressed_size": info.file_size,
                     "compressed_size": info.compress_size,
                     "is_safe": is_safe,
                     "reject_reason": reason,
                     "is_json": ext == '.json',
-                    "is_media": ext in cls.EXT_MEDIA
+                    "is_media": ext in cls.EXT_MEDIA,
                 }
                 members.append(member_item)
 

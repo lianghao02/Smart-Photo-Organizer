@@ -410,7 +410,7 @@ class Logger:
 class ConfigConstants:
     """⚙️ 全域常數 — 所有可變參數集中於此，嚴禁魔術數字"""
     APP_NAME    = "智慧照片整理助手 (Pro)"
-    VERSION     = "3.0"
+    VERSION     = "3.0.1"
     CONFIG_FILE = "config.json"
     HISTORY_FILE = "history_log.json"
     BLOCK_SIZE  = 65536
@@ -2158,6 +2158,17 @@ class WebBridge:
         destination = os.path.abspath(destination)
         if source_mode == "folder" and not os.path.isdir(source):
             raise ValueError("一般資料夾模式的來源必須是資料夾")
+        if source_mode == "folder":
+            source_canonical = os.path.normcase(os.path.realpath(source))
+            destination_canonical = os.path.normcase(os.path.realpath(destination))
+            try:
+                common_root = os.path.commonpath(
+                    [source_canonical, destination_canonical]
+                )
+            except ValueError:
+                common_root = ""
+            if common_root in {source_canonical, destination_canonical}:
+                raise ValueError("來源與目標資料夾不可相同或互為父子資料夾")
         if source_mode == "takeout_zip" and not (
             os.path.isdir(source)
             or (os.path.isfile(source) and source.lower().endswith(".zip"))

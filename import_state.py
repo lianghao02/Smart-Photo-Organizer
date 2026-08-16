@@ -11,6 +11,16 @@ import datetime
 from typing import Optional, Dict, Any, List
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """保留交易語意，並在 with 區塊結束後釋放 SQLite 連線。"""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class TakeoutState:
     # 推進狀態
     DISCOVERED = "DISCOVERED"
@@ -50,11 +60,20 @@ class TakeoutStateManager:
         self._migrate_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL;")
-        conn.execute("PRAGMA foreign_keys = ON;")
-        return conn
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=30.0,
+            factory=_ClosingConnection,
+        )
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("PRAGMA busy_timeout = 30000;")
+            return conn
+        except Exception:
+            conn.close()
+            raise
 
     def _init_db(self):
         with self._get_conn() as conn:

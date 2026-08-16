@@ -91,6 +91,13 @@ class TestMediaGroup(unittest.TestCase):
         self.assertEqual(mg.members[0].role, GroupRole.PRIMARY)
         self.assertEqual(mg.status, "DISCOVERED")
 
+    def test_state_connection_context_closes_connection(self):
+        connection = self.state_mgr._get_conn()
+        with connection as active_connection:
+            active_connection.execute("SELECT 1")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+
     def test_sqlite_media_group_persistence(self):
         """驗證 SQLite media_groups 與 media_group_members 資料表寫入與查詢"""
         job_id = "job_media_group_test"
