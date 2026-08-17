@@ -22,7 +22,7 @@ class ZipExtractionError(Exception):
     pass
 
 
-from media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA
+from .media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA
 
 
 class TakeoutZipScanner:

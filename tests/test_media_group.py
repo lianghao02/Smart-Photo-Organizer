@@ -20,15 +20,16 @@ import sys
 import shutil
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 PROJECT_ROOT = str(Path(__file__).resolve().parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-import import_state
-from source_index import SourceItem
-from media_group import MediaGroupBuilder, GroupRole
+from smart_photo_organizer import import_state
+from smart_photo_organizer.source_index import SourceItem
+from smart_photo_organizer.media_group import MediaGroupBuilder, GroupRole
 
 
 class TestMediaGroup(unittest.TestCase):
@@ -213,7 +214,8 @@ class TestMediaGroup(unittest.TestCase):
     def test_phase2_duplicate_member_migration(self):
         """Phase 2 初版資料庫若已有重複成員，升級時須保留一筆並建立唯一索引。"""
         legacy_db = os.path.join(self.test_dir, "legacy_phase2.db")
-        with sqlite3.connect(legacy_db) as conn:
+        # sqlite3.Connection 的原生 context manager 只處理交易，並不關閉連線。
+        with closing(sqlite3.connect(legacy_db)) as conn:
             conn.executescript("""
                 CREATE TABLE media_groups (
                     group_id TEXT PRIMARY KEY,

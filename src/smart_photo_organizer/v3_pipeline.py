@@ -10,32 +10,32 @@ import zlib
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
-from archive_manager import ArchiveSummary, MediaArchiveManager
-from date_review import (
+from .archive_manager import ArchiveSummary, MediaArchiveManager
+from .date_review import (
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DateAnomalyReviewer,
     DateReviewTarget,
 )
-from import_state import JobType, TakeoutState, TakeoutStateManager
-from media_group import GroupRole, MediaGroup, MediaGroupBuilder
-from media_metadata import MediaMetadataExtractor
-from media_types import EXT_PHOTOS
-from quarantine_manager import QuarantineManager, QuarantineSummary
-from review_classifier import MediaAnalysisTarget, ReviewClassifier
-from review_workspace import ReviewWorkspaceManager
-from sidecar_matcher import SidecarMatcher
-from similarity import (
+from .import_state import JobType, TakeoutState, TakeoutStateManager
+from .media_group import GroupRole, MediaGroup, MediaGroupBuilder
+from .media_metadata import MediaMetadataExtractor
+from .media_types import EXT_PHOTOS
+from .quarantine_manager import QuarantineManager, QuarantineSummary
+from .review_classifier import MediaAnalysisTarget, ReviewClassifier
+from .review_workspace import ReviewWorkspaceManager
+from .sidecar_matcher import SidecarMatcher
+from .similarity import (
     SimilarPhotoDetector,
     SimilarityCandidate,
     SimilarityFingerprint,
 )
-from source_index import (
+from .source_index import (
     FolderSourceIndexer,
     SourceItem,
     TakeoutSourceIndexer,
     is_reparse_point_or_link,
 )
-from takeout_zip import TakeoutZipScanner
+from .takeout_zip import TakeoutZipScanner
 
 
 V3_DB_RELATIVE_PATH = os.path.join("_ImportTemp", "v3_state.db")

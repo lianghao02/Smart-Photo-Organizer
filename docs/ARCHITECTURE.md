@@ -5,8 +5,8 @@
 | 模組 | 責任 |
 |---|---|
 | `main.py` | PyWebView WebBridge、DateParser、Windows `.lnk` 與本機媒體後設資料 fallback |
-| `takeout_zip.py` | ZIP 唯讀掃描、安全檢查與單檔串流解壓驗證 |
-| `source_index.py` | 一般資料夾／Takeout ZIP 統一唯讀來源索引；排除管理目錄與 Reparse Point |
+| `src/smart_photo_organizer/takeout_zip.py` | ZIP 唯讀掃描、安全檢查與單檔串流解壓驗證 |
+| `src/smart_photo_organizer/source_index.py` | 一般資料夾／Takeout ZIP 統一唯讀來源索引；排除管理目錄與 Reparse Point |
 | `sidecar_matcher.py` | 一般資料夾、同 ZIP 與跨 ZIP Sidecar 配對；歧義與 JSON 獨佔控制 |
 | `media_group.py` | MediaGroup、Live Photo 及 RAW/JPEG 配對與決定性群組 ID |
 | `review_workspace.py` | `_Review`、`_ReviewCache`、捷徑與 SQLite ReviewEntry |

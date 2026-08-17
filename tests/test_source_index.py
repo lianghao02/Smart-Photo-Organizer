@@ -26,8 +26,8 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from source_index import FolderSourceIndexer, TakeoutSourceIndexer, SourceItem, is_reparse_point_or_link
-from takeout_zip import TakeoutZipScanner, ZipSecurityError
+from smart_photo_organizer.source_index import FolderSourceIndexer, TakeoutSourceIndexer, SourceItem, is_reparse_point_or_link
+from smart_photo_organizer.takeout_zip import TakeoutZipScanner, ZipSecurityError
 
 
 class TestSourceIndex(unittest.TestCase):

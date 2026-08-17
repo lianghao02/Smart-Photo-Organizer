@@ -7,9 +7,9 @@ Google Takeout ZIP 匯入引擎 - 跨 ZIP 媒體與 Sidecar JSON 索引配對模
 import os
 import re
 from typing import List, Dict, Any, Set, Tuple, Optional
-from import_state import TakeoutStateManager, TakeoutState
-from source_index import SourceItem
-from sidecar_matcher import SidecarMatcher
+from .import_state import TakeoutStateManager, TakeoutState
+from .source_index import SourceItem
+from .sidecar_matcher import SidecarMatcher
 
 
 class TakeoutIndexer:

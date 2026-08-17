@@ -27,7 +27,7 @@
 - Pillow 解碼遇受損或超高畫素檔案可能引發 `DecompressionBombError` (繼承自 `RuntimeError`)，必須在 `try...except` 顯式捕獲，避免中斷相似照片分析管線。
 - SQLite WAL 模式多任務讀寫連線必須配置 `PRAGMA busy_timeout = 30000;` 30 秒重試，避免併發鎖定時直接崩潰。
 - Takeout ZIP 未標記 Bit 11 時預設會以 CP437 解析，必須以 CP437 轉碼為 UTF-8 恢復真實檔名，保障中文 Sidecar 配對。
-- 專案重構為 `src-layout` 後，`main.py` 與 `tests/` 必須動態注入 `sys.path` 包含 `src/`，確保直接啟動與單元測試發現機制皆正常。
+- 專案採 `src/smart_photo_organizer/` 正式 package；`main.py` 與原始碼工作樹測試可將 `src/` 加入模組搜尋路徑，但核心模組一律使用 package 相對匯入，不依賴平坦模組名稱。
 
 ## 📦 外部依賴追蹤
 

@@ -8,15 +8,15 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from import_state import TakeoutStateManager
-from media_types import EXT_PHOTOS
-from quarantine_manager import (
+from .import_state import TakeoutStateManager
+from .media_types import EXT_PHOTOS
+from .quarantine_manager import (
     DEFAULT_FREE_SPACE_RESERVE,
     QuarantineError,
     QuarantineManager,
 )
-from review_workspace import PENDING_DELETE_DIRECTORY, ReviewWorkspaceManager
-from source_index import is_reparse_point_or_link
+from .review_workspace import PENDING_DELETE_DIRECTORY, ReviewWorkspaceManager
+from .source_index import is_reparse_point_or_link
 
 
 DATE_CONFIDENCE_THRESHOLD = 50

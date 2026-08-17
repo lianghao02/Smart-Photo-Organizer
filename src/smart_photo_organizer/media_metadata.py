@@ -62,7 +62,7 @@ def write_sidecar_atomic(sidecar_bytes: bytes, target_json_path: str) -> Tuple[b
         return False, str(e)
 
 
-from media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA
+from .media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA
 
 
 class MediaMetadataExtractor:

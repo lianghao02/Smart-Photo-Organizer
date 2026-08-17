@@ -19,16 +19,16 @@ import unittest
 
 from PIL import Image
 
-from import_state import TakeoutStateManager
-from media_group import GroupMember, GroupRole, MediaGroup
-from review_classifier import (
+from smart_photo_organizer.import_state import TakeoutStateManager
+from smart_photo_organizer.media_group import GroupMember, GroupRole, MediaGroup
+from smart_photo_organizer.review_classifier import (
     ExactDuplicateDetector,
     MediaAnalysisTarget,
     ReviewClassifier,
     VideoDurationProbe,
 )
-from review_workspace import ReviewWorkspaceManager
-from source_index import SourceItem
+from smart_photo_organizer.review_workspace import ReviewWorkspaceManager
+from smart_photo_organizer.source_index import SourceItem
 
 
 class FakeShortcutBackend:

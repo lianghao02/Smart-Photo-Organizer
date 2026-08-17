@@ -29,10 +29,10 @@ from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import zipfile
-import media_metadata
-from media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA, EXT_JUNK
-from source_index import FolderSourceIndexer
-from sidecar_matcher import SidecarMatcher
+from smart_photo_organizer import media_metadata
+from smart_photo_organizer.media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA, EXT_JUNK
+from smart_photo_organizer.source_index import FolderSourceIndexer
+from smart_photo_organizer.sidecar_matcher import SidecarMatcher
 from typing import Optional, Callable, Dict, Any, Set, Tuple
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
@@ -80,10 +80,10 @@ except ImportError:
     rg = None
     _HAS_RG = False
 
-import import_state
-import takeout_zip
-import takeout_index
-from v3_pipeline import AnalysisOptions, PipelineCancelled, V3Pipeline
+from smart_photo_organizer import import_state
+from smart_photo_organizer import takeout_zip
+from smart_photo_organizer import takeout_index
+from smart_photo_organizer.v3_pipeline import AnalysisOptions, PipelineCancelled, V3Pipeline
 
 def is_screenshot_by_exif_and_ratio(path: str, strict_mode: bool = True) -> bool:
     """透過檢查無相機物理 EXIF 參數以及長寬比符合手機比例 (>= 1.9) 來智慧辨識螢幕截圖"""
@@ -2559,7 +2559,7 @@ class WebBridge:
             reserved_destinations: Set[str] = set()
 
             import uuid
-            import media_metadata
+            from smart_photo_organizer import media_metadata
 
             for idx, m in enumerate(pending_members, 1):
                 if self._stop_event.is_set():

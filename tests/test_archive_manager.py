@@ -17,9 +17,9 @@ import shutil
 import tempfile
 import unittest
 
-from archive_manager import ArchiveError, MediaArchiveManager
-from import_state import TakeoutStateManager
-from review_workspace import PENDING_DELETE_DIRECTORY, ReviewWorkspaceManager
+from smart_photo_organizer.archive_manager import ArchiveError, MediaArchiveManager
+from smart_photo_organizer.import_state import TakeoutStateManager
+from smart_photo_organizer.review_workspace import PENDING_DELETE_DIRECTORY, ReviewWorkspaceManager
 
 
 class FakeShortcutBackend:

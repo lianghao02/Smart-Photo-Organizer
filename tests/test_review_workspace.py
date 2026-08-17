@@ -16,8 +16,8 @@ import shutil
 import tempfile
 import unittest
 
-from import_state import TakeoutStateManager
-from review_workspace import (
+from smart_photo_organizer.import_state import TakeoutStateManager
+from smart_photo_organizer.review_workspace import (
     PENDING_DELETE_DIRECTORY,
     REVIEW_CATEGORIES,
     ReviewWorkspaceError,

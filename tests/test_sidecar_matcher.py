@@ -29,8 +29,8 @@ if PROJECT_ROOT not in sys.path:
 sys.modules.setdefault("webview", types.ModuleType("webview"))
 
 import main as app_main
-from source_index import SourceItem
-from sidecar_matcher import SidecarMatcher, SidecarMatch, MatchOutcome
+from smart_photo_organizer.source_index import SourceItem
+from smart_photo_organizer.sidecar_matcher import SidecarMatcher, SidecarMatch, MatchOutcome
 
 
 class TestSidecarMatcher(unittest.TestCase):

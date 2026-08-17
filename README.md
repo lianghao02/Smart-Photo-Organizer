@@ -7,7 +7,7 @@
 
 ## v3.1.0 更新重點
 
-- **標準工業級架構重構**：全面導入標準 Python `src-layout`，15 個商業邏輯模組集中收納於 `src/`，規格與架構文件收納於 `docs/`，單元測試統一收納於 `tests/`。
+- **標準 Python package 架構**：15 個核心模組集中於 `src/smart_photo_organizer/`，使用 package 相對匯入；規格文件與測試分別收納於 `docs/`、`tests/`。
 - **高風險防禦強化**：
   - 影像解碼加入 `RuntimeError` 與 Pillow `DecompressionBombError` 例外攔截防禦，避免毀損/超大圖檔中斷分析。
   - SQLite 連線初始化配置 `PRAGMA busy_timeout = 30000;`，增強高併發與多工作階段存取下的鎖定忍受度。
@@ -19,6 +19,7 @@
 - Windows 10 或更新版本
 - Python 3.13
 - 安裝相依套件：`python -m pip install -r requirements.txt`
+- 開發模式安裝：`python -m pip install -e .`
 - 啟動：`python main.py`
 
 ## 基本流程

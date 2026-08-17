@@ -12,11 +12,11 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from media_group import GroupRole, MediaGroup
-from media_metadata import MediaMetadataExtractor
-from media_types import EXT_MEDIA, EXT_PHOTOS
-from review_workspace import ReviewEntry, ReviewWorkspaceManager
-from similarity import SimilarPhotoDetector, SimilarityCandidate
+from .media_group import GroupRole, MediaGroup
+from .media_metadata import MediaMetadataExtractor
+from .media_types import EXT_MEDIA, EXT_PHOTOS
+from .review_workspace import ReviewEntry, ReviewWorkspaceManager
+from .similarity import SimilarPhotoDetector, SimilarityCandidate
 
 
 HASH_BLOCK_SIZE = 4 * 1024

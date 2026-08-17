@@ -10,14 +10,14 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-from media_types import (
+from .media_types import (
     JPEG_PHOTO_EXTENSIONS,
     LIVE_PHOTO_IMAGE_EXTENSIONS,
     LIVE_PHOTO_VIDEO_EXTENSIONS,
     RAW_PHOTO_EXTENSIONS,
 )
-from sidecar_matcher import MatchOutcome, SidecarMatcher
-from source_index import SourceItem
+from .sidecar_matcher import MatchOutcome, SidecarMatcher
+from .source_index import SourceItem
 
 
 class GroupRole:

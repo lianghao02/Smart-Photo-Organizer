@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional
 
-from review_workspace import ReviewEntry, ReviewWorkspaceManager
+from .review_workspace import ReviewEntry, ReviewWorkspaceManager
 
 
 DEFAULT_LOW_CONFIDENCE_THRESHOLD = 50

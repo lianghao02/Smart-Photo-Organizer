@@ -19,10 +19,10 @@ from datetime import datetime, timedelta, timezone
 
 from PIL import Image, ImageDraw
 
-from import_state import TakeoutStateManager
-from review_classifier import MediaAnalysisTarget, ReviewClassifier
-from review_workspace import ReviewWorkspaceManager
-from similarity import SimilarPhotoDetector, SimilarityCandidate
+from smart_photo_organizer.import_state import TakeoutStateManager
+from smart_photo_organizer.review_classifier import MediaAnalysisTarget, ReviewClassifier
+from smart_photo_organizer.review_workspace import ReviewWorkspaceManager
+from smart_photo_organizer.similarity import SimilarPhotoDetector, SimilarityCandidate
 
 
 class FakeShortcutBackend:

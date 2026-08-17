@@ -9,8 +9,8 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Tuple, Optional
-from source_index import SourceItem
-from media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA
+from .source_index import SourceItem
+from .media_types import EXT_PHOTOS, EXT_VIDEOS, EXT_MEDIA
 
 
 @dataclass

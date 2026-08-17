@@ -13,8 +13,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Protocol, Tuple
 
-from import_state import TakeoutStateManager
-from media_types import EXT_MEDIA
+from .import_state import TakeoutStateManager
+from .media_types import EXT_MEDIA
 
 
 REVIEW_CATEGORIES: Dict[str, str] = {

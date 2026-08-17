@@ -11,13 +11,13 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from import_state import TakeoutStateManager
-from review_workspace import (
+from .import_state import TakeoutStateManager
+from .review_workspace import (
     PENDING_DELETE_DIRECTORY,
     ReviewEntry,
     ReviewWorkspaceManager,
 )
-from source_index import is_reparse_point_or_link
+from .source_index import is_reparse_point_or_link
 
 
 QUARANTINE_ROOT_NAME = "_Quarantine"

@@ -19,9 +19,9 @@ import types
 import unittest
 from unittest.mock import patch
 
-from import_state import TakeoutStateManager
-from quarantine_manager import QuarantineError, QuarantineManager
-from review_workspace import PENDING_DELETE_DIRECTORY, ReviewWorkspaceManager
+from smart_photo_organizer.import_state import TakeoutStateManager
+from smart_photo_organizer.quarantine_manager import QuarantineError, QuarantineManager
+from smart_photo_organizer.review_workspace import PENDING_DELETE_DIRECTORY, ReviewWorkspaceManager
 
 
 class FakeShortcutBackend:
@@ -248,7 +248,7 @@ class TestQuarantineManager(unittest.TestCase):
             dry_run=False, free_space_reserve=100,
         )
         fake_usage = types.SimpleNamespace(total=1000, used=999, free=1)
-        with patch("quarantine_manager.shutil.disk_usage", return_value=fake_usage):
+        with patch("smart_photo_organizer.quarantine_manager.shutil.disk_usage", return_value=fake_usage):
             summary = manager.process_pending("job_q", paths)
         self.assertTrue(summary.errors)
         self.assertTrue(os.path.isfile(media_path))

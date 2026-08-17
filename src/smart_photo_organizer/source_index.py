@@ -9,8 +9,8 @@ import stat
 import zipfile
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any, Set
-from media_types import EXT_MEDIA, EXT_PHOTOS, EXT_VIDEOS, EXT_JUNK
-from takeout_zip import TakeoutZipScanner, ZipSecurityError
+from .media_types import EXT_MEDIA, EXT_PHOTOS, EXT_VIDEOS, EXT_JUNK
+from .takeout_zip import TakeoutZipScanner, ZipSecurityError
 
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400

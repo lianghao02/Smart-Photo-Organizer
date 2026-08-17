@@ -19,9 +19,9 @@ import unittest
 
 from PIL import Image
 
-from date_review import DateAnomalyReviewer, DateReviewTarget
-from import_state import TakeoutStateManager
-from review_workspace import ReviewWorkspaceManager
+from smart_photo_organizer.date_review import DateAnomalyReviewer, DateReviewTarget
+from smart_photo_organizer.import_state import TakeoutStateManager
+from smart_photo_organizer.review_workspace import ReviewWorkspaceManager
 
 
 class FakeShortcutBackend:

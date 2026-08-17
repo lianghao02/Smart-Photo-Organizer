@@ -29,11 +29,11 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-import import_state
-import takeout_zip
-import takeout_index
-import media_metadata
-from media_types import EXT_MEDIA
+from smart_photo_organizer import import_state
+from smart_photo_organizer import takeout_zip
+from smart_photo_organizer import takeout_index
+from smart_photo_organizer import media_metadata
+from smart_photo_organizer.media_types import EXT_MEDIA
 import main as app_main
 
 

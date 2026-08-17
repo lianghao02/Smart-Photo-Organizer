@@ -22,8 +22,8 @@ from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
-from v3_pipeline import AnalysisOptions, PipelineCancelled, V3Pipeline
-from takeout_zip import TakeoutZipScanner
+from smart_photo_organizer.v3_pipeline import AnalysisOptions, PipelineCancelled, V3Pipeline
+from smart_photo_organizer.takeout_zip import TakeoutZipScanner
 
 
 class FakeShortcutBackend:
