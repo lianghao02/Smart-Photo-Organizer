@@ -51,3 +51,5 @@ date_audit.csv
 .venv
 env/
 venv/
+python_embed/
+python-embed/
