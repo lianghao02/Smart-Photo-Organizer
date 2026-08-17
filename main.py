@@ -419,7 +419,7 @@ class Logger:
 class ConfigConstants:
     """⚙️ 全域常數 — 所有可變參數集中於此，嚴禁魔術數字"""
     APP_NAME    = "智慧照片整理助手 (Pro)"
-    VERSION     = "3.0.1"
+    VERSION     = "3.2.0"
     CONFIG_FILE = "config.json"
     HISTORY_FILE = "history_log.json"
     BLOCK_SIZE  = 65536

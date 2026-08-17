@@ -1,11 +1,21 @@
-# 智慧照片整理助手 Smart-Photo-Organizer v3.1.0
+# 智慧照片整理助手 Smart-Photo-Organizer v3.2.0
 
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-v3.1.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v3.2.0-blue.svg)](CHANGELOG.md)
 
 本工具採「先分析、人工審核、最後處理」流程。分析階段只建立索引、SQLite 狀態、報表與 Windows 捷徑，不搬移、刪除或重新命名來源媒體；Google Takeout ZIP 保持唯讀。
 
-## v3.1.0 更新重點
+## 下載、依賴與啟動
+
+- **系統**：Windows 10/11，Python `>=3.13,<3.14`；版本範圍記錄於 `pyproject.toml`。
+- **推薦啟動**：下載 ZIP、解壓後雙擊 `RUN.bat`。沒有 Python 時，腳本會建立專案內的 `python_embed` 並安裝依賴。
+- **手動安裝**：`py -3.13 -m venv .venv`，啟用後執行 `python -m pip install -e .`，再執行 `python main.py`。
+- **執行依賴**：pywebview、Pillow、pillow-heif、geopy、pystray；`requirements.txt` 供自癒環境，`pyproject.toml` 是套件與 Python 版本的正式來源。
+- **功能**：索引本機照片及 Google Takeout ZIP、配對 sidecar、依日期／位置／媒體群組整理、相似度與人工審核工作區。
+- **打包／移機**：保留完整專案與 `python_embed`；若要建立正式安裝套件，可在安裝 `build` 工具後執行 `python -m build`，輸出位於 `dist/`。
+- **資料安全**：先以測試資料驗證，不要把輸出放進來源資料夾；大量處理前必須保留原始檔備份。
+
+## v3.2.0 更新重點
 
 - **標準 Python package 架構**：15 個核心模組集中於 `src/smart_photo_organizer/`，使用 package 相對匯入；規格文件與測試分別收納於 `docs/`、`tests/`。
 - **高風險防禦強化**：

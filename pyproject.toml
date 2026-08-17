@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart-photo-organizer"
-version = "3.1.0"
+version = "3.2.0"
 description = "以人工審核為核心的本機照片與 Google Takeout 整理工具"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
