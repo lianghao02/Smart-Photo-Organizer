@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([string]$PythonPath = '')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest

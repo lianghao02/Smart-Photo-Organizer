@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([switch]$RequireClean)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
