@@ -1,14 +1,8 @@
-# Antigravity 規則入口
+# Codex 專案指引
 
-本檔不再維護第二套專案規則。
+先讀取根目錄 `AGENTS.md`、`docs/tasks.md`、`docs/spec.md` 與 `docs/DEVELOPMENT_RULES.md`。
 
-請完整閱讀並遵循專案根目錄的 `../AGENTS.md`，再依序閱讀：
-
-1. `../tasks.md`
-2. `../spec.md`
-3. `../ARCHITECTURE.md`
-4. `../plan.md`
-5. `../DESIGN.md`
-6. `../MEMORY.md`
-
-目前唯一有效的工作單是 `../tasks.md`。不得依舊對話或舊 Phase 名稱自行擴大修改範圍。
+- 負責程式碼審查、邊界條件、回歸測試與必要的小範圍修正。
+- 不修改 `.gemini/`；不複製或同步 Antigravity 指引。
+- 以 `scripts/qa.ps1` 驗證實際結果，並以 Git 差異做審查依據。
+- 使用 `codex/dev` Worktree；不得與 Antigravity 共用工作資料夾。
