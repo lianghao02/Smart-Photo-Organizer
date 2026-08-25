@@ -1,5 +1,9 @@
 # 智慧照片整理助手 Smart-Photo-Organizer v3.2.0
 
+## 技術架構現況（2026-08-24）
+
+本專案主力為 **Python 3.13／pywebview／Pillow／SQLite**，以既有測試保護 Google Takeout、MediaGroup 與審核流程。現階段不進行完整重寫；只有在效能量測確認瓶頸時，才評估以 Rust 抽換雜湊、索引或 ZIP 串流等單一核心。
+
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/version-v3.2.0-blue.svg)](CHANGELOG.md)
 
