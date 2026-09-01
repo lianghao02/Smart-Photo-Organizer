@@ -6,6 +6,10 @@
 
 - 明列 Python 3.13／pywebview／Pillow／SQLite 為主力架構；Rust 僅保留為未來可量測效能瓶頸的局部核心選項，本次未進行語言遷移。
 
+### 維護
+
+- `RUN.bat` 優先使用 PowerShell 7；未安裝時自動退回 Windows PowerShell 5.1，維持既有可攜 Python 自癒啟動流程。
+
 ## [v3.2.0] - 2026-08-17
 
 ### 發布與環境
