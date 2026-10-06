@@ -5,7 +5,7 @@
 # 智慧照片整理助手 (Smart Photo Organizer) v2.7
 # ==============================================================================
 # pip install Pillow pillow-heif geopy
-# [選用] pip install xxhash opencv-python numpy reverse_geocoder
+# [選用] .venv\Scripts\python.exe -m pip install xxhash reverse_geocoder；OpenCV／NumPy 已列於需求檔
 # ==============================================================================
 
 import sys
@@ -22,6 +22,7 @@ import json
 import hashlib
 import shutil
 import threading
+import queue
 import datetime
 import time
 import concurrent.futures
@@ -172,25 +173,35 @@ class WinShellReader:
     """透過 Windows Shell COM 讀取媒體後設資料並管理 Windows 捷徑。"""
     def __init__(self):
         self.proc = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self.response_timeout = 15.0
+        self._responses = None
+        self._output_thread = None
+        self._input_thread = None
         
     def start(self):
+        with self.lock:
+            if self.proc and self.proc.poll() is None:
+                return
+            self.stop()
+            self._start_process()
+
+    @staticmethod
+    def _read_output(proc, responses):
+        try:
+            for line in proc.stdout:
+                responses.put(line.strip())
+        except (OSError, ValueError):
+            pass
+        finally:
+            responses.put(None)
+
+    def _start_process(self):
         if os.name != 'nt':
             return
         try:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            # 使用 utf-8 讀寫 ASCII-safe Base64 管道
-            self.proc = subprocess.Popen(
-                ['powershell', '-NoProfile', '-NonInteractive', '-Command', '-'],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-                startupinfo=startupinfo
-            )
-            
             # 定義 PowerShell helper 函數
             init_script = """
             function Get-ShellDetailsB64 {
@@ -288,98 +299,113 @@ class WinShellReader:
                 return "eyJzdWNjZXNzIjpmYWxzZX0="
             }
             """
-            self.proc.stdin.write(init_script + "\n")
-            self.proc.stdin.flush()
+            # 啟動腳本不經 stdin，避免初始化本身塞滿管道；後續每行一個內部請求。
+            init_script += """
+            $ErrorActionPreference = 'Stop'
+            while ($null -ne ($command = [Console]::ReadLine())) {
+                try { [Console]::WriteLine([string](Invoke-Expression $command)) }
+                catch { [Console]::WriteLine('eyJzdWNjZXNzIjpmYWxzZX0=') }
+            }
+            """
+            encoded_script = base64.b64encode(init_script.encode('utf-16le')).decode('ascii')
+            self.proc = subprocess.Popen(
+                ['powershell.exe', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', encoded_script],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                # 輔助函式已將失敗回傳為 JSON；不保留無人讀取的錯誤管道。
+                stderr=subprocess.DEVNULL, text=True, encoding='utf-8', startupinfo=startupinfo)
+            self._responses = queue.Queue()
+            self._output_thread = threading.Thread(
+                target=self._read_output, args=(self.proc, self._responses), daemon=True)
+            self._output_thread.start()
         except Exception as e:
             Logger.get_instance().error(f"無法啟動 WinShellReader: {e}")
-            self.proc = None
+            self.stop()
 
-    def get_properties(self, file_path: str) -> dict:
+    def _request(self, command: str) -> dict:
         if os.name != 'nt':
             return {"success": False}
-        if not self.proc or self.proc.poll() is not None:
-            try: self.start()
-            except: return {"success": False}
-        if not self.proc:
-            return {"success": False}
-
         with self.lock:
             try:
-                b64_path = base64.b64encode(file_path.encode('utf-8')).decode('ascii')
-                cmd = f"Get-ShellDetailsB64 '{b64_path}'"
-                self.proc.stdin.write(cmd + "\n")
-                self.proc.stdin.flush()
-                
-                line = self.proc.stdout.readline().strip()
-                if line:
-                    decoded = base64.b64decode(line.encode('ascii')).decode('utf-8')
-                    return json.loads(decoded)
-            except Exception:
-                pass
-        return {"success": False}
+                self.start()
+                if not self.proc:
+                    return {"success": False}
+                # 寫入也可能被凍結的子程序阻塞，與讀取共用同一回應期限。
+                self._input_thread = threading.Thread(
+                    target=self._write_command, args=(self.proc, self._responses, command), daemon=True)
+                self._input_thread.start()
+                deadline = time.monotonic() + self.response_timeout
+                while True:
+                    line = self._responses.get(timeout=max(0, deadline - time.monotonic()))
+                    if line is None:
+                        raise EOFError('Shell 輔助程序已結束')
+                    if isinstance(line, Exception):
+                        raise line
+                    if not line:
+                        continue
+                    decoded = base64.b64decode(line.encode('ascii'), validate=True).decode('utf-8')
+                    response = json.loads(decoded)
+                    if not isinstance(response, dict):
+                        raise ValueError('Shell 回應格式錯誤')
+                    return response
+            except queue.Empty:
+                Logger.get_instance().error('Windows Shell 回應逾時，已回收輔助程序；可稍後重試。')
+            except Exception as e:
+                Logger.get_instance().error(f'Windows Shell 讀取失敗：{e}')
+            # 丟棄整個舊通道，避免遲到回應被下一個請求誤用。
+            self.stop()
+            return {"success": False}
+
+    @staticmethod
+    def _write_command(proc, responses, command):
+        try:
+            proc.stdin.write(command + "\n")
+            proc.stdin.flush()
+        except (OSError, ValueError) as error:
+            responses.put(error)
+
+    def get_properties(self, file_path: str) -> dict:
+        b64_path = base64.b64encode(file_path.encode('utf-8')).decode('ascii')
+        return self._request(f"Get-ShellDetailsB64 '{b64_path}'")
 
     def create_shortcut(self, link_path: str, target_path: str) -> bool:
         """在指定路徑建立指向 target_path 的 Windows 捷徑 (.lnk)"""
-        if os.name != 'nt':
-            return False
-        if not self.proc or self.proc.poll() is not None:
-            try: self.start()
-            except: return False
-        if not self.proc:
-            return False
-
-        with self.lock:
-            try:
-                b64_link = base64.b64encode(link_path.encode('utf-8')).decode('ascii')
-                b64_target = base64.b64encode(target_path.encode('utf-8')).decode('ascii')
-                cmd = f"New-LinkB64 '{b64_link}' '{b64_target}'"
-                self.proc.stdin.write(cmd + "\n")
-                self.proc.stdin.flush()
-                
-                line = self.proc.stdout.readline().strip()
-                if line:
-                    decoded = base64.b64decode(line.encode('ascii')).decode('utf-8')
-                    return json.loads(decoded).get('success', False)
-            except Exception:
-                pass
-        return False
+        b64_link = base64.b64encode(link_path.encode('utf-8')).decode('ascii')
+        b64_target = base64.b64encode(target_path.encode('utf-8')).decode('ascii')
+        return self._request(f"New-LinkB64 '{b64_link}' '{b64_target}'").get('success', False)
 
     def resolve_shortcut(self, link_path: str) -> Optional[str]:
         """解析捷徑 (.lnk)，回傳其所指向的實體目標路徑"""
-        if os.name != 'nt':
-            return None
-        if not self.proc or self.proc.poll() is not None:
-            try: self.start()
-            except: return None
-        if not self.proc:
-            return None
-
-        with self.lock:
-            try:
-                b64_link = base64.b64encode(link_path.encode('utf-8')).decode('ascii')
-                cmd = f"Resolve-LinkB64 '{b64_link}'"
-                self.proc.stdin.write(cmd + "\n")
-                self.proc.stdin.flush()
-                
-                line = self.proc.stdout.readline().strip()
-                if line:
-                    decoded = base64.b64decode(line.encode('ascii')).decode('utf-8')
-                    res = json.loads(decoded)
-                    if res.get('success'):
-                        return res.get('target_path')
-            except Exception:
-                pass
+        b64_link = base64.b64encode(link_path.encode('utf-8')).decode('ascii')
+        response = self._request(f"Resolve-LinkB64 '{b64_link}'")
+        if response.get('success'):
+            return response.get('target_path')
         return None
 
     def stop(self):
-        if self.proc:
-            try:
-                self.proc.stdin.write("exit\n")
-                self.proc.stdin.flush()
-                self.proc.terminate()
-            except:
-                pass
+        with self.lock:
+            proc = self.proc
+            output_thread = self._output_thread
+            input_thread = self._input_thread
             self.proc = None
+            self._responses = None
+            self._output_thread = None
+            self._input_thread = None
+            if proc:
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                finally:
+                    if output_thread:
+                        output_thread.join(timeout=1)
+                    if input_thread:
+                        input_thread.join(timeout=1)
+                    for stream in (proc.stdin, proc.stdout):
+                        if stream:
+                            stream.close()
 
 
 # ==============================================================================
