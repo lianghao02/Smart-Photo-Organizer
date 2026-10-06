@@ -20,6 +20,8 @@ Shell 無限等待防護修復與完整回歸已完成；開發環境修復成�
 上述 SHA 為修復前已存在的 HEAD。既有功能成果承接原版本，不重做或撤銷；詳細跨專案基準位於控制中心 docs/python-environment-repair/baseline.json。
 
 ## 已完成 (Completed)
+2026-10-06 GitHub QA 補修：Linux UTC 主機發現既有 QuickTime 日期測試固定預期台灣時間；產品原本按本機時區轉換，行為正確，`main.py` SHA-256 不變。只修正測試預期值，增加 UTC／UTC+8／UTC−5 的行程內時區案例，並校準 AGENTS 的既有 unittest 入口。本機受影響測試 18 項：17 通過、1 略過（Windows 無 tzset）；Linux 多時區及完整 QA 結果見中央同步報告。未更動系統時區、依賴或原始資料。
+
 2026-10-06 GitHub 同步交接：使用者已授權提交與推送前輪成果；本輪只提交已核對範圍。最新 Commit SHA、遠端同步與 CI 結果統一見控制中心 `docs/github-sync/RESULTS.md`，不將提交本身的 SHA 寫入同一份提交。 本輪補正 PowerShell 5.1 中文腳本編碼：僅增加 UTF-8 BOM，原內容位元組不變；29 個相關腳本在 5.1／7 語法檢查均通過，環境 CheckOnly 亦通過。
 
 2026-10-06 代表性驗收：中央合成生成器改用正式 WinShellReader，資料夾／ZIP 各分析 6 組媒體、1 組完全重複與 1 組截圖，歸檔預覽各 6 組，來源 SHA-256 不變。未實體整理原始照片或重新發布；素材與證據見中央 docs/new-build-acceptance/RESULTS.md。

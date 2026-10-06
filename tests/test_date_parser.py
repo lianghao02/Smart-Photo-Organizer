@@ -12,8 +12,10 @@ import datetime
 from pathlib import Path
 import sys
 import tempfile
+import time
 import types
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.modules.setdefault("webview", types.ModuleType("webview"))
@@ -34,7 +36,29 @@ class DateParserVideoMetadataTests(unittest.TestCase):
             "streams": [],
         }
         actual = self.parser._parse_ffprobe_metadata(metadata)
-        self.assertEqual(actual, datetime.datetime(2015, 6, 18, 10, 20, 30))
+        # +08:00 的拍攝時間對應 UTC 02:20:30，輸出依執行電腦的時區。
+        utc_event = datetime.datetime(2015, 6, 18, 2, 20, 30, tzinfo=datetime.timezone.utc)
+        self.assertEqual(actual, datetime.datetime.fromtimestamp(utc_event.timestamp()))
+
+    @unittest.skipUnless(hasattr(time, "tzset"), "需要支援 tzset 的測試主機")
+    def test_quicktime_date_uses_local_timezone(self):
+        metadata = {"format": {"tags": {
+            "com.apple.quicktime.creationdate": "2015-06-18T10:20:30+08:00",
+        }}, "streams": []}
+        cases = (
+            ("UTC0", datetime.datetime(2015, 6, 18, 2, 20, 30)),
+            ("CST-8", datetime.datetime(2015, 6, 18, 10, 20, 30)),
+            ("EST5", datetime.datetime(2015, 6, 17, 21, 20, 30)),
+        )
+        for timezone, expected in cases:
+            with self.subTest(timezone=timezone):
+                try:
+                    # 只調整目前測試行程，離開後還原，不更動系統時區。
+                    with patch.dict(os.environ, {"TZ": timezone}):
+                        time.tzset()
+                        self.assertEqual(self.parser._parse_ffprobe_metadata(metadata), expected)
+                finally:
+                    time.tzset()
 
     def test_stream_creation_time_is_supported(self):
         metadata = {

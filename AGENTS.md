@@ -35,9 +35,10 @@
 
 ## 4. 核心驗證方式
 - 修改資料模型、分類演算法或檔案操作管線後，必須執行完整自動化測試：
-  ```bash
-  pytest tests/ -q
+  ```powershell
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\test.ps1
   ```
+- Windows 入口使用專案 `.venv`（缺少時才偵測 embedded）執行既有 unittest；Linux CI 使用 `python -m unittest discover -s tests -v`。不為測試另外安裝 pytest。
 
 ---
 
